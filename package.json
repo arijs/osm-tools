@@ -9,8 +9,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@arijs/seek-bzip": "^1.0.5",
     "node-xml-stream-parser": "github:mfahlandt/node-xml-stream-parser",
-    "seek-bzip": "github:realityking/seek-bzip#commander",
     "unbzip2-stream": "^1.3.1"
   }
 }
