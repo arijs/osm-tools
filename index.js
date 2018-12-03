@@ -1,7 +1,7 @@
 var fs = require('fs');
 var path = require('path');
 var stream = require('stream');
-var unbzip2 = require('unbzip2-stream');
+var SeekBzip = require('@arijs/seek-bzip');
 var dataSize = require('./datasize');
 var StreamingDecoder = require('./streaming-decoder');
 var LineSplitter = require('./line-splitter');
@@ -22,6 +22,50 @@ function streamPos(i) {
 		}
 	});
 }
+
+var bzStats = [];
+var bzIndexFile = 0;
+var bzIndexBlock = 0;
+var bzNextFileOffset = 0;
+var bzFile;
+bzInitFile();
+function bzInitFile() {
+	bzFile = {
+		blocks: [],
+		crc: null,
+		offsetStart: bzNextFileOffset,
+		offsetEnd: bzNextFileOffset,
+		offsetBitEnd: 0,
+		input: 0,
+		output: 0
+	};
+}
+function bzFinishBlock(fopt) {
+	bzIndexBlock++;
+	bzFile.blocks.push({
+		crc: fopt.blockCRC,
+		crcStream: fopt.streamPartialCRC,
+		offset: fopt.byteOffset,
+		offsetBit: fopt.bitOffset,
+		input: fopt.bytesInput,
+		output: fopt.bytesOutput
+	});
+	bzFile.input += fopt.bytesInput;
+	bzFile.output += fopt.bytesOutput;
+	chunkCount[0] += 1;
+	chunkPos[0] += @TODO ?;
+}
+function bzFinishFile(fopt) {
+	bzIndexBlock = 0;
+	bzIndexFile++;
+	bzNextFileOffset = fopt.fileOffset;
+	bzFile.crc = fopt.streamCRC;
+	bzFile.offsetEnd = bzNextFileOffset;
+	bzFile.offsetBitEnd = fopt.bitOffsetEnd;
+	bzStats.push(bzFile);
+	bzFile = bzInitFile();
+}
+
 var chunkXMLTags = [];
 var chunkXMLIndex = [];
 var chunkXMLStatsRoot = { tags: {} };
@@ -31,10 +75,12 @@ var chunkXMLLastChunks = new Array(20);
 function getXMLTagPosStats() {
 	return {
 		count: chunkCount.slice(),
-		pos: chunkPos.slice()
+		pos: chunkPos.slice(),
+		bzFile: bzIndexFile,
+		bzBlock: bzIndexBlock
 	};
 }
-function streamXMLPos() {
+function createStreamXMLPos() {
 	return new stream.Transform({
 		highWaterMark: 0,
 		objectMode: true,
@@ -121,6 +167,7 @@ function printXMLStats() {
 		' '+printTime(time)+' '+printTime(remain)+
 		' / '+chunkCount.join(', ')+
 		' / '+chunkPos.slice(0,2).map(dataSize).join(', ')+
+		' bz'+bzIndexFile+'.'+bzIndexBlock+
 		// ' / ('+chunkXMLTags.length+') '+chunkXMLTags.join('>')+
 		' /'+printXMLStructure(chunkXMLStatsRoot)
 		// ' /factor '+Number(chunkPos[0]/chunkPos[1]).toFixed(3)
@@ -160,10 +207,19 @@ var myWritable = new stream.Writable({
 
 var fpath = path.resolve(__dirname, '../planet-latest.osm.bz2');
 var fstat = fs.statSync(fpath);
+var fd = fs.openSync(fpath, 'r');
 var tstart = Date.now();
+var proximoDesce = false;
+var fopt;
 
 console.log(dataSize(fstat.size));
 
+process.on('SIGINT', function() {
+	proximoDesce = true;
+	console.error('\nParando no próximo ponto...');
+});
+
+var streamXMLPos = createStreamXMLPos();
 var ptTarget = new stream.PassThrough({ highWaterMark: 0 });
 var ptTarget2 = ptTarget
 // .pipe(streamPos(1))
@@ -172,11 +228,49 @@ var ptTarget2 = ptTarget
 .pipe(new LineSplitter({ highWaterMark: 0 }))
 .pipe(streamPos(2))
 .pipe(new ParseXML({ highWaterMark: 0 }))
-.pipe(streamXMLPos())
+.pipe(streamXMLPos)
 .pipe(myWritable)
 .on('finish', function() {
 	console.log('process finished');
 });
+
+function onData(buf) {
+	ptTarget.write(buf);
+}
+function bzProcess() {
+	try {
+		fopt = SeekBzip.readBlock(fd, fopt, onData, 8192);
+		// console.error(detailsBlock(fopt, dataSize));
+		if (fopt && fopt.streamCRC != null) {
+
+		} else if (fopt && fopt.blockCRC != null) {
+
+		} else {
+
+		}
+		var nextFn = ( !proximoDesce && (fopt.fileOffset < fstat.size) )
+			? bzProcess
+			: bzEnd;
+		if (fopt.fileCount % 5) {
+			process.nextTick(nextFn);
+		} else {
+			setTimeout(nextFn, 0);
+		}
+	} catch (err) {
+		bzEnd(err);
+	}
+}
+function bzEnd(err) {
+	fs.closeSync(fd);
+	ptTarget.end();
+	if (err) console.error('\nTeve um erro', err);
+	// console.error(
+	// 	proximoDesce
+	// 	? 'Parou antes do final'
+	// 	: 'Você chegou no final, parabéns!'
+	// );
+}
+
 
 var maxZipChunks = 50000;
 var zipChunkCount = [];
