@@ -71,7 +71,7 @@ function readBlock(sread, swrite, opt) {
 			fileCount: opt.fileCount,
 			fileOffset: opt.fileOffset,
 			// byteOffset: start - opt.fileOffset + bytesRead - (bz.reader.bitOffset ? 1 : 0),
-			byteOffset: sread.getFilePosition(),
+			byteOffset: sread.getFilePosition() - opt.fileOffset - (bz.reader.bitOffset ? 1 : 0),
 			bytesInput: bytesRead,
 			bytesOutput: swrite.byteCount,
 			bitOffset: bz.reader.bitOffset,
@@ -97,7 +97,7 @@ function readBlock(sread, swrite, opt) {
 		bytesRead = sread.byteCount;
 		return {
 			fileCount: opt.fileCount + 1,
-			fileOffset: start + bytesRead,
+			fileOffset: sread.getFilePosition(),
 			byteOffset: 0,
 			bytesInput: bytesRead,
 			bytesOutput: 0,

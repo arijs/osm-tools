@@ -87,7 +87,8 @@ function bzProcess() {
 
 function searchHexString(hexString, bz, bzRead) {
 	var len = hexString.length;
-	var lbytes = Math.ceil(len*0.5);
+	var lbytesSearch = Math.ceil(len * 0.5);
+	var lbytes = lbytesSearch * 10;
 	var startBit = bz.reader.bitOffset;
 	var filePos = bzRead.filePos;
 	var bzPos = bzRead.pos;
@@ -97,7 +98,7 @@ function searchHexString(hexString, bz, bzRead) {
 	for (var bit = 0; bit < 8; bit++) {
 		var bitAtt = [];
 		bz.reader.seek(bzStart, bit);
-		var remain = bzRead.end - (bit ? 1 : 0);
+		var remain = bzRead.end - 1;//(bit ? 1 : 0);
 		var getSubstr = function() {
 			var n = Math.min(lbytes, remain);
 			var s = n > 0 ? bz.reader.readBytes(n).toString('hex') : '';
@@ -107,10 +108,13 @@ function searchHexString(hexString, bz, bzRead) {
 		var fstart = remain;
 		var start1 = 0;
 		var prev;
+		console.error('---- bit '+bit+' ----',{fp:bzRead.filePos,p:bzRead.pos,e:bzRead.end,r:remain});
+		console.error(bzRead.lastSeek);
 		var next = getSubstr();
 		var spos = lbytes;
 		var cut = 0;
 		var start2 = fstart - remain;
+		// console.error('. '.concat(cut,' ',next));
 		do {
 			prev = next;
 			next = getSubstr();
@@ -118,16 +122,18 @@ function searchHexString(hexString, bz, bzRead) {
 			if (ix != -1) {
 				bitAtt.push({
 					ix: ix,
-					p: prev,
-					n: next,
+					// p: prev,
+					// n: next,
 					c: cut,
 					s1: start1,
 					s2: start2,
+					o: ix * 0.5 + start1,
 					fs: fstart,
 					r: remain
 				});
 			}
 			cut++;
+			// console.error('. '.concat(cut,' ',next,' ',ix,' ',start1,'-',start2));
 			start1 = start2;
 			start2 = fstart - remain;
 		} while (remain > 0);
@@ -138,12 +144,20 @@ function searchHexString(hexString, bz, bzRead) {
 }
 
 function bzEnd(err) {
-	fs.closeSync(fd);
-	strDec.end();
 	if (err) {
 		if (err.errorCode === SeekBzip.Err.NOT_BZIP_DATA) {
 			var pi = '314159265359';
-			console.error(searchHexString(pi, fopt.bz, bzRead));
+			bzRead.fillBufferDisabled = true;
+			var m = searchHexString(pi, fopt.bz, bzRead);
+			for (var i = 0; i < m.length; i++) {
+				var mil = m[i].length;
+				// if (!mil) continue;
+				console.error(': bit '+i+(mil ? ' - '+mil+' matches' : ''));
+				for (var j = 0; j < mil; j++) {
+					console.error(m[i][j]);
+				}
+			}
+			bzRead.fillBufferDisabled = false;
 			// var rbuf = bzRead.buffer.toString('hex');
 			// var index = rbuf.indexOf(pi);
 			// var sub = (index == -1) ? null : [
@@ -171,4 +185,6 @@ function bzEnd(err) {
 		? 'Parou antes do final'
 		: 'Você chegou no final, parabéns!'
 	);
+	fs.closeSync(fd);
+	strDec.end();
 }
