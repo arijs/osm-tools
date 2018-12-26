@@ -113,10 +113,10 @@ function printXMLStats() {
 	);
 }
 
-// var fname = '../planet-181217.osm';
-var fname = '../planet-latest.osm';
+var fname = '../osm/planet-181119.osm';
+// var fname = '../planet-latest.osm';
 var fpath = path.resolve(__dirname, fname+'.bz2');
-var fwpath = path.resolve(__dirname, fname);
+// var fwpath = path.resolve(__dirname, fname);
 var fspath = path.resolve(__dirname, fname+'-stats.json');
 var fstat = fs.statSync(fpath);
 var tstart = Date.now();
@@ -369,7 +369,9 @@ function saveProcessStats(callback) {
 			chunkCount: chunkCount,
 			chunkPos: chunkPos,
 			bzFile: bzIndexFile,
-			bzBlock: bzIndexBlock
+			bzBlock: bzIndexBlock,
+			bzNextFileOffset: bzNextFileOffset,
+			bzCurrentFile: bzFile
 		}
 	}), function(err) {
 		if (err) {
@@ -410,6 +412,8 @@ function continueProcess(err, stats) {
 		previousChunkPos = chunkPos.slice();
 		bzIndexFile = stats.current.bzFile;
 		bzIndexBlock = stats.current.bzBlock;
+		bzNextFileOffset = stats.current.bzNextFileOffset;
+		bzFile = stats.current.bzCurrentFile;
 		pipe[3].s.write(stats.xml.remain.buffer);
 	}
 	bzProcess();
@@ -457,7 +461,7 @@ function bzProcess() {
 		// console.error(detailsBlock(fopt, formatBytes));
 		if (fopt.streamCRC) {
 			bzFinishFile(fopt);
-			if (0 == (fopt.fileCount % 10)) {
+			if (0 == (fopt.fileCount % 100)) {
 				proximoDesce = true;
 			}
 		} else if (fopt.blockCRC) {
