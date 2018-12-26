@@ -47,7 +47,8 @@ function readBlock(sread, swrite, opt) {
 	opt = opt || initBlockOpt();
 	// sread.seek(opt.fileOffset);
 	var writeTotal = 0;
-	var bytesRead = 0;
+	var bytesRead = -sread.byteCount;
+	var bytesWrite = -swrite.byteCount;
 	// var sread = Bunzip.fdReadStream(fd, bufSize, opt.fileOffset);
 	// var swrite = makeOutStream(onData, bufSize);
 	var bz = new Bunzip(sread, swrite, opt.bzLevel);
@@ -65,7 +66,8 @@ function readBlock(sread, swrite, opt) {
 
     /* Decompress the block and write to stdout */
     bz._read_bunzip();
-		bytesRead = sread.byteCount;
+		bytesRead += sread.byteCount;
+		bytesWrite += swrite.byteCount;
 
 		return {
 			fileCount: opt.fileCount,
@@ -73,7 +75,7 @@ function readBlock(sread, swrite, opt) {
 			// byteOffset: start - opt.fileOffset + bytesRead - (bz.reader.bitOffset ? 1 : 0),
 			byteOffset: sread.getFilePosition() - opt.fileOffset - (bz.reader.bitOffset ? 1 : 0),
 			bytesInput: bytesRead,
-			bytesOutput: swrite.byteCount,
+			bytesOutput: bytesWrite,
 			bitOffset: bz.reader.bitOffset,
 			bitOffsetEnd: 0,
 			blockCount: opt.blockCount + 1,
@@ -94,13 +96,14 @@ function readBlock(sread, swrite, opt) {
 				" expected "+targetStreamCRC.toString(16)+")"
 			);
 		}
-		bytesRead = sread.byteCount;
+		bytesRead += sread.byteCount;
+		bytesWrite += swrite.byteCount;
 		return {
 			fileCount: opt.fileCount + 1,
 			fileOffset: sread.getFilePosition(),
 			byteOffset: 0,
 			bytesInput: bytesRead,
-			bytesOutput: 0,
+			bytesOutput: bytesWrite,
 			bitOffset: 0,
 			bitOffsetEnd: bz.reader.bitOffset,
 			blockCount: 0,

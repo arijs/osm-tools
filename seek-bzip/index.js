@@ -598,7 +598,7 @@ Bunzip.table = function(input, callback, multistream) {
 };
 
 Bunzip.Stream = Stream;
-Bunzip.fdReadStream = require('./readstream');
+Bunzip.fdReadFile = require('./readstream');
 Bunzip.fdWriteStream = require('./writestream');
 require('./readblock')(Bunzip);
 

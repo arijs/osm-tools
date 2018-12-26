@@ -1,12 +1,14 @@
 var stream = require('stream');
 var XMLStream = require('node-xml-stream-parser');
 
-var OPEN_TAG = 'opentag';
-var CLOSE_TAG = 'closetag';
-var TEXT = 'text';
-var CDATA = 'cdata';
-var INSTRUCTION = 'instruction';
-var ERROR = 'error';
+var XSE = XMLStream.EVENTS;
+var OPEN_TAG = XSE.OPEN_TAG;
+var CLOSE_TAG = XSE.CLOSE_TAG;
+var TEXT = XSE.TEXT;
+var CDATA = XSE.CDATA;
+var INSTRUCTION = XSE.INSTRUCTION;
+var ERROR = XSE.ERROR;
+var UNPARSED_REMAIN = XSE.UNPARSED_REMAIN;
 
 function ParseXML(options) {
 	options || (options = {});
@@ -33,8 +35,11 @@ function ParseXML(options) {
 	parser.on(ERROR, function(error) {
 		self.push({ type: ERROR, error: error });
 	});
+	parser.on(UNPARSED_REMAIN, function(remain) {
+		self.push({ type: UNPARSED_REMAIN, buffer: remain.buffer, pos: remain.pos });
+	});
 	parser.on('finish', function() {
-		self.end();
+		self.push(null);
 	});
 }
 
@@ -44,16 +49,22 @@ ParseXML.TEXT = TEXT;
 ParseXML.CDATA = CDATA;
 ParseXML.INSTRUCTION = INSTRUCTION;
 ParseXML.ERROR = ERROR;
+ParseXML.UNPARSED_REMAIN = UNPARSED_REMAIN;
 
 ParseXML.prototype = Object.create(stream.Duplex.prototype);
 ParseXML.prototype.constructor = ParseXML;
 ParseXML.prototype._read = function() {};
 ParseXML.prototype._write = function(chunk, encoding, callback) {
-	this._parser.write(chunk);
-	callback();
+	try {
+		this._parser.write(chunk);
+	} catch(e) {
+		return callback(e);
+	}
+	return callback();
 };
 ParseXML.prototype._final = function(callback) {
 	this._parser.end();
+	callback && callback();
 };
 
 module.exports = ParseXML;

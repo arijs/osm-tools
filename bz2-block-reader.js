@@ -1,7 +1,7 @@
 var fs = require('fs');
 var path = require('path');
 var util = require('util');
-var SeekBzip = require('./seek-bzip');
+var SeekBzip = require('@arijs/seek-bzip');
 var dataSize = require('./datasize');
 var StreamingDecoder = require('./streaming-decoder');
 
@@ -17,12 +17,12 @@ var strDec = new StreamingDecoder({ highWaterMark: 0 });
 strDec.on('readable', function() {
 	var data;
 	while (data = this.read()) {
-		console.log(data.toString('utf8'));
+		// console.log(data.toString('utf8'));
 	}
 });
 var proximoDesce = false;
 var fopt;
-var bzRead = SeekBzip.fdReadStream(fd, 16384, 0);
+var bzRead = SeekBzip.fdReadFile(fd, 16384, 0);
 var bzWrite = SeekBzip.readBlock.makeOutStream(outPrint, 16384);
 function outPrint(buf) {
 	// if (buf.length <= 1024) {
@@ -72,10 +72,18 @@ function bzProcess() {
 	try {
 		fopt = SeekBzip.readBlock(bzRead, bzWrite, fopt);
 		console.error(detailsBlock(fopt, formatBytes));//dataSize));
+		// if (fopt.byteOffset) {
+		// 	var rnd = Math.random();
+		// 	if (rnd < 0.01) {
+		// 		fopt.byteOffset -= 1;
+		// 	} else if (rnd > 0.99) {
+		// 		fopt.byteOffset += 1;
+		// 	}
+		// }
 		var nextFn = ( !proximoDesce && (fopt.fileOffset < fstat.size) )
 			? bzProcess
 			: bzEnd;
-		if (fopt.fileCount % 5) {
+		if (fopt.fileCount % 10) {
 			process.nextTick(nextFn);
 		} else {
 			setTimeout(nextFn, 0);
@@ -148,34 +156,24 @@ function bzEnd(err) {
 		if (err.errorCode === SeekBzip.Err.NOT_BZIP_DATA) {
 			var pi = '314159265359';
 			bzRead.fillBufferDisabled = true;
-			var m = searchHexString(pi, fopt.bz, bzRead);
+			var m = SeekBzip.searchHexString(pi, fopt.bz, bzRead, {
+				searchMult: 10,
+				onBitStart: function(bit) {
+					console.error('---- bit '+bit+' ----',{fp:bzRead.filePos,p:bzRead.pos,e:bzRead.end});//,r:remain
+					console.error(bzRead.lastSeek);
+				},
+				onFound: function(res, bit) {
+					console.error('. '.concat(res.c,' ',res.n,' ',res.ix,' ',res.s1,'-',res.s2));
+				}
+			});
 			for (var i = 0; i < m.length; i++) {
 				var mil = m[i].length;
-				// if (!mil) continue;
 				console.error(': bit '+i+(mil ? ' - '+mil+' matches' : ''));
 				for (var j = 0; j < mil; j++) {
 					console.error(m[i][j]);
 				}
 			}
 			bzRead.fillBufferDisabled = false;
-			// var rbuf = bzRead.buffer.toString('hex');
-			// var index = rbuf.indexOf(pi);
-			// var sub = (index == -1) ? null : [
-			// 	rbuf.substring(Math.max(0, index-48), index),
-			// 	rbuf.substring(index, index+12),
-			// 	rbuf.substring(index+12, index+48),
-			// ];
-			// console.error({
-			// 	index: index,
-			// 	sub: sub,
-			// 	filePos: bzRead.filePos,
-			// 	pos: bzRead.pos,
-			// 	end: bzRead.pos,
-			// 	blen: bzRead.buffer.length,
-			// 	lsFilePos: bzRead.lastStats.filePos,
-			// 	lsPos: bzRead.lastStats.pos,
-			// 	lsEnd: bzRead.lastStats.end
-			// });
 		}
 		console.error(util.inspect(fopt, {depth: 0}));
 		console.error('Teve um erro', err);
