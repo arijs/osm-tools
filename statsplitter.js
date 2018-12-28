@@ -27,7 +27,7 @@ fs.readFile(fpath, {encoding: 'utf8'}, function(err, data) {
 	);
 	fs.writeFile(
 		getFilePath(fdir, fbase+'-bzip', fext),
-		JSON.stringify(data.bzipTable, null, '\t'),
+		JSON.stringify(data.bzip, null, '\t'),
 		function(err) {
 			if (err) {
 				console.error('Erro salvando bzip', err);
@@ -44,6 +44,28 @@ fs.readFile(fpath, {encoding: 'utf8'}, function(err, data) {
 				console.error('Erro salvando fopt', err);
 			} else {
 				console.error('fopt salvo com sucesso');
+			}
+		}
+	);
+	fs.writeFile(
+		getFilePath(fdir, fbase+'-runs', fext),
+		JSON.stringify(data.runs, null, '\t'),
+		function(err) {
+			if (err) {
+				console.error('Erro salvando runs', err);
+			} else {
+				console.error('runs salvo com sucesso');
+			}
+		}
+	);
+	fs.writeFile(
+		getFilePath(fdir, fbase+'-current', fext),
+		JSON.stringify(data.current, null, '\t'),
+		function(err) {
+			if (err) {
+				console.error('Erro salvando current', err);
+			} else {
+				console.error('current salvo com sucesso');
 			}
 		}
 	);

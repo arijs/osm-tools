@@ -11,6 +11,15 @@ var ParseXML = require('./parse-xml');
 
 var hop = Object.prototype.hasOwnProperty;
 
+var thousandsUnits = ['', 'k', 'm', 'b'];
+function formatCount(x) {
+	x = +x;
+	var t = 0;
+	while (x > 1e3 && t < 3) {
+		x /= 1e3, t++;
+	}
+	return x.toFixed(t).replace('.', thousandsUnits[t]);
+}
 function formatBytes(x) {
 	return Number(x).toFixed(0);
 }
@@ -82,29 +91,46 @@ function createStreamFork(s1, s2) {
 
 function printXMLStructure(cxsNext, tagName) {
 	var ct = cxsNext.tags;
-	var tags = [];
-	for (var k in ct) {
+	var tags = [], tagtags = [], tagcount = 0, k;
+	for (k in ct) {
 		if (hop.call(ct, k)) {
 			tags.push(printXMLStructure(ct[k], k));
 		}
 	}
+	ct = cxsNext.tag_k_map;
+	if (ct) for (k in ct) {
+		if (hop.call(ct, k)) {
+			tagcount += ct[k].count;
+			var sub = printXMLStructure(ct[k]);
+			sub && tagtags.push(sub);
+		}
+	}
+	if (tagcount) {
+		tagtags = tagtags.join(',');
+		tagtags = 'tag '+formatCount(tagcount)+(tagtags?'('+tagtags+')':'')
+		tags.push(tagtags);
+	}
 	tags = tags.join(',');
-	if (tagName) tags = tagName+' '+cxsNext.count+(tags?'('+tags+')':'');
+	if (tagName) {
+		tags = tagName+' '+
+			formatCount(cxsNext.count)+
+			(tags?'('+tags+')':'');
+	}
 	return tags;
 }
 
 function printXMLStats() {
 	var time = (Date.now() - tstart) * 0.001;
 	var posInput = chunkPos[0];
-	var percent = Number(posInput / fstat.size);
+	var percent = Number(100 * posInput / fstat.size);
 	var runInput = posInput - previousChunkPos[0];
 	var speed = runInput / time;
 	var remain = (fstat.size - posInput) / speed;
 	process.stdout.write(
 		// '/encoding: '+encoding+
-		'\r'+percent.toFixed(5)+' '+dataSize(speed)+'/s'+
+		'\r'+percent.toFixed(3)+' '+dataSize(speed)+'/s'+
 		' '+printTime(time)+' '+printTime(remain)+
-		' / '+chunkCount.join(', ')+
+		' / '+chunkCount.map(formatCount).join(', ')+
 		' / '+chunkPos.map(dataSize).join(', ')+
 		' bz'+bzIndexFile+'.'+bzIndexBlock+
 		// ' / ('+chunkXMLTags.length+') '+chunkXMLTags.join('>')+
@@ -204,9 +230,9 @@ function getXMLTagPosStats() {
 	};
 }
 
-function xmlMergeAttrsStats(target, source) {
+function xmlMergeAttrsStats(target, source, mapIgnore) {
 	for (var k in source) {
-		if (hop.call(source, k)) {
+		if (hop.call(source, k) && !(mapIgnore && mapIgnore[k])) {
 			var stats = target[k];
 			if (stats) {
 				stats.last = chunkXMLCurrent;
@@ -232,7 +258,7 @@ function createStreamXMLPos() {
 		transform: function(chunk, encoding, callback) {
 			var error = null;
 			var cname = chunk.name;
-			var cxsNext;
+			var cxsNext, tag_k, tag_k_map;
 			chunkXMLLastChunks = chunkXMLLastChunks.slice(1,10).concat([chunk]);
 			if (chunkXMLFirstChunks.length < 10) {
 				chunkXMLFirstChunks.push(chunk);
@@ -241,11 +267,21 @@ function createStreamXMLPos() {
 				case ParseXML.OPEN_TAG:
 					chunkXMLTags.push(cname);//+'['+chunkXMLCurrent+']');
 					chunkXMLIndex.push(chunkXMLCurrent);
-					cxsNext = chunkXMLStatsCurrent.tags[cname];
+					if (cname === 'tag' && hop.call(chunk.attrs, 'k')) {
+						tag_k = chunk.attrs.k;
+						tag_k_map = chunkXMLStatsCurrent.tag_k_map;
+						if (!tag_k_map) {
+							chunkXMLStatsCurrent.tag_k_map = tag_k_map = {};
+						}
+						cxsNext = tag_k_map[tag_k];
+					} else {
+						cxsNext = chunkXMLStatsCurrent.tags[cname];
+					}
 					if (!cxsNext) {
 						cxsNext = {
 							parent: void 0,
 							tags: {},
+							// tag_k_map: {},
 							attrs: {},
 							firstOpen: getXMLTagPosStats(),
 							firstClose: null,
@@ -255,13 +291,17 @@ function createStreamXMLPos() {
 							lastIndex: null,
 							count: 0
 						};
-						chunkXMLStatsCurrent.tags[cname] = cxsNext;
+						if (tag_k_map) {
+							tag_k_map[tag_k] = cxsNext;
+						} else {
+							chunkXMLStatsCurrent.tags[cname] = cxsNext;
+						}
 					}
 					cxsNext.parent = chunkXMLStatsCurrent;
 					cxsNext.lastOpen = getXMLTagPosStats();
 					cxsNext.lastIndex = chunkXMLCurrent;
 					cxsNext.count += 1;
-					xmlMergeAttrsStats(cxsNext.attrs, chunk.attrs);
+					xmlMergeAttrsStats(cxsNext.attrs, chunk.attrs, tag_k_map ? {k:true}:null);
 					chunkXMLStatsCurrent = cxsNext;
 					chunkXMLCurrent = 0;
 					break;
@@ -461,7 +501,7 @@ function bzProcess() {
 		// console.error(detailsBlock(fopt, formatBytes));
 		if (fopt.streamCRC) {
 			bzFinishFile(fopt);
-			if (0 == (fopt.fileCount % 100)) {
+			if (0 == (fopt.fileCount % 300)) {
 				proximoDesce = true;
 			}
 		} else if (fopt.blockCRC) {
@@ -502,14 +542,21 @@ function bzEnd(err) {
 
 function cleanXMLTree(tree) {
 	var t = tree.tags;
-	var ctags = {};
+	var ctags = {}, ttags = {};
 	for (var k in t) {
 		if (hop.call(t, k)) {
 			ctags[k] = cleanXMLTree(t[k]);
 		}
 	}
+	t = tree.tag_k_map;
+	for (var k in t) {
+		if (hop.call(t, k)) {
+			ttags[k] = cleanXMLTree(t[k]);
+		}
+	}
 	return {
 		tags: ctags,
+		tag_k_map: ttags,
 		attrs: tree.attrs,
 		firstOpen: tree.firstOpen,
 		firstClose: tree.firstClose,
