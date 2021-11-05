@@ -139,11 +139,14 @@ function printXMLStats() {
 	);
 }
 
-var fname = '../osm/planet-181119.osm';
+// var fname = '../osm/planet-181119.osm';
+var fname = '/mnt/k/Nova Pasta/brazil-latest.osm';
 // var fname = '../planet-latest.osm';
-var fpath = path.resolve(__dirname, fname+'.bz2');
+// var fpath = path.resolve(__dirname, fname+'.bz2');
+var fpath = fname+'.bz2';
 // var fwpath = path.resolve(__dirname, fname);
-var fspath = path.resolve(__dirname, fname+'-stats.json');
+// var fspath = path.resolve(__dirname, fname+'-stats.json');
+var fspath = fname+'-stats.json';
 var fstat = fs.statSync(fpath);
 var tstart = Date.now();
 var totaltime = 0;
