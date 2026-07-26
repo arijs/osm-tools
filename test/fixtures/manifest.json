@@ -1,0 +1,44 @@
+{
+  "tiny": {
+    "nodes": 3,
+    "ways": 1,
+    "xmlBytes": 732,
+    "bz2Bytes": 324,
+    "large": false,
+    "hasRawOsm": true
+  },
+  "small": {
+    "nodes": 400,
+    "ways": 50,
+    "xmlBytes": 64245,
+    "bz2Bytes": 3035,
+    "large": false,
+    "hasRawOsm": true
+  },
+  "medium": {
+    "nodes": 8000,
+    "ways": 1000,
+    "xmlBytes": 1304848,
+    "bz2Bytes": 53482,
+    "large": false,
+    "hasRawOsm": true
+  },
+  "large20": {
+    "nodes": 121133,
+    "ways": 15141,
+    "xmlBytes": 20117092,
+    "bz2Bytes": 812375,
+    "large": true,
+    "hasRawOsm": false,
+    "targetMb": 20
+  },
+  "large200": {
+    "nodes": 1211350,
+    "ways": 151418,
+    "xmlBytes": 204201902,
+    "bz2Bytes": 8141053,
+    "large": true,
+    "hasRawOsm": false,
+    "targetMb": 200
+  }
+}

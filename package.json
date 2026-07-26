@@ -1,16 +1,41 @@
 {
-  "name": "osm-parser",
-  "version": "0.0.0",
-  "description": "-",
-  "main": "index.js",
+  "name": "osm-tools",
+  "version": "0.1.0",
+  "description": "Streaming OSM inventory for geocoding exploration (.osm.bz2 XML and .osm.pbf)",
+  "main": "index0.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/**/*.test.js",
+    "test:fixture": "node scripts/run-named-tests.js",
+    "test:index0": "node --test test/index0.test.js",
+    "test:pbf": "node --test test/pbf-inventory.test.js",
+    "test:extract": "node --test test/extract-geocode.test.js test/name-norm.test.js test/uf-br.test.js",
+    "extract:geocode": "node extract-geocode-pbf.js",
+    "test:xml": "node --test test/xml-parser.test.js",
+    "test:bz2": "node --test test/bz2-fixtures.test.js",
+    "test:large": "node scripts/run-named-tests.js large",
+    "fixtures": "python scripts/generate-fixtures.py",
+    "fixtures:large": "python scripts/generate-fixtures.py --large",
+    "fixtures:only": "python scripts/generate-fixtures.py --only",
+    "fixtures:pbf": "node scripts/write-tiny-pbf.js"
   },
+  "keywords": [
+    "openstreetmap",
+    "osm",
+    "bzip2",
+    "pbf",
+    "xml",
+    "geocoding",
+    "streaming",
+    "parser"
+  ],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "@arijs/seek-bzip": "file:../../../d/dev/github/seek-bzip",
-    "node-xml-stream-parser": "file:../../../d/dev/github/node-xml-stream-parser",
+    "@arijs/seek-bzip": "file:../seek-bzip",
+    "@arijs/stream-xml-parser": "^0.2.24",
     "pbf": "^3.2.1",
     "unbzip2-stream": "^1.3.1"
   }

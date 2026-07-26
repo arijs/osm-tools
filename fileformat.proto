@@ -1,0 +1,22 @@
+/** Copyright (c) 2010 Scott A. Crosby. <scott@sacrosby.com>
+   MIT license — see upstream OSM-binary fileformat.proto
+*/
+
+syntax = "proto2";
+package OSMPBF;
+
+message Blob {
+  optional int32 raw_size = 2;
+  optional bytes raw = 1;
+  optional bytes zlib_data = 3;
+  optional bytes lzma_data = 4;
+  optional bytes OBSOLETE_bzip2_data = 5;
+  optional bytes lz4_data = 6;
+  optional bytes zstd_data = 7;
+}
+
+message BlobHeader {
+  required string type = 1;
+  optional bytes indexdata = 2;
+  required int32 datasize = 3;
+}

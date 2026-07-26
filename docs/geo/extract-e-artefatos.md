@@ -1,0 +1,130 @@
+# Extract PBF → TXT `@` (artefatos intermediários)
+
+Script: **`extract-geocode-pbf.js`** (reutiliza `pbf-reader`, protos OSM, helpers `name-norm`, `uf-br`, `txt-at-writer`).
+
+## Objetivo
+
+Ler um `.osm.pbf` regional e gravar **só** features relevantes para casar com o cadastro brasileiro — **não** inventário, **não** 141 M nodes no disco.
+
+Modelo de arquivo: **igual espírito DNE** — texto UTF-8, delimitador **`@`**, sem header, regenerável. Contrato: `README-colunas.md` na pasta de saída.
+
+## Datasets
+
+| Dataset CLI | Arquivo(s) | Filtro OSM típico |
+|-------------|------------|-------------------|
+| `estado` | `OSM_ESTADO.TXT` | `place=state` ou `boundary=administrative` + `admin_level=4` |
+| `municipio` | `OSM_MUNICIPIO.TXT` | `place=city\|municipality\|town` ou admin `admin_level=8`; IBGE só **7 dígitos** |
+| `bairro` | `OSM_BAIRRO.TXT` | `place=suburb\|neighbourhood\|quarter` (e afins) |
+| `logradouro` | `OSM_LOGRADOURO_{UF}.TXT` | `highway=*` **e** `name` (ou `name:pt`) |
+| `addr` / `--addr-points` | `OSM_ADDR_POINT_{UF}.TXT` | node com `addr:street` (opcional; **não** popular número global em massa) |
+
+Default de datasets: estado + município + bairro + logradouro (`addr` off).
+
+### Logradouro por UF (obrigatório no desenho)
+
+Espelho de `LOG_LOGRADOURO_{UF}.TXT` do DNE:
+
+- `OSM_LOGRADOURO_SP.TXT`, `_RJ`, `_MG`, `_ES`, …
+- Residual **`XX`** se UF não resolvida (tags → IBGE → bbox do way vs retângulos SE)
+
+Atribuição de UF (ordem): tags (`ISO3166-2`, `addr:state`, …) → prefixo IBGE → ponto/bbox do way.
+
+### Município: o que **não** emitir
+
+- `place=suburb|district` com IBGE de **8–9 dígitos** (código de distrito) — polui o match.
+- Só entra IBGE no TXT se tiver **exatamente 7 dígitos** (`municipioIbgeOnly`).
+
+## Colunas (resumo)
+
+Detalhe completo no `README-colunas.md` gerado na saída.
+
+**Estado:**  
+`osm_type@osm_id@uf@name@name_norm@lat@lng@lat_min@lat_max@lng_min@lng_max@admin_level@place`
+
+**Município:**  
+`osm_type@osm_id@ibge@uf@name@name_norm@lat@lng@lat_min@lat_max@lng_min@lng_max@admin_level@place@source_tag`
+
+**Bairro:**  
+`osm_type@osm_id@name@name_norm@uf@city@city_norm@ibge_hint@lat@lng@…@place`
+
+**Logradouro:**  
+`osm_id@name@name_norm@highway@uf@city@city_norm@suburb@suburb_norm@postcode@lat@lng@…@way_node_count`
+
+Campos com `@` ou newline no nome são sanitizados (substituídos).
+
+## Two-pass (geometria)
+
+### Por que existe
+
+No PBF típico a ordem é **todos os nodes → ways → relations**.  
+Cache LRU de ~500 k nós: quando as ways chegam, os refs já saíram da memória → `logradouroNoGeom` ~99 % e UF=`XX`.
+
+### O que o two-pass faz
+
+| Pass | Ação |
+|------|------|
+| **1** | Emite estado/município/bairro “fáceis”; **agenda** ways de logradouro (refs) e relations município com `admin_centre`/`label` sem coords no cache |
+| **2** | Relê o PBF só para colher lat/lon dos node ids necessários; emite logradouros e municípios pendentes |
+
+Default: two-pass **ligado** se `logradouro` ou `municipio` estiver nos datasets.  
+Custo: ~**2×** leitura do arquivo. Memória: set de node ids + lista de ways pendentes (logradouro SE pode ser grande → `NODE_OPTIONS=--max-old-space-size=8192`).
+
+### Contagens úteis no checkpoint
+
+- `municipioPending` / `logradouroPending` — agenda da pass 1  
+- `logradouroNoGeom` — ways emitidos sem nenhum nó resolvido  
+- `streetCoordsSize` / `neededNodeIds` — cobertura da pass 2  
+
+## Resume e soft-stop — o que é e o que **não** é
+
+### Soft-stop (Ctrl+C)
+
+- 1º sinal: pede parada no **fim do blob PBF atual** (prazo default 30 s).  
+- 2º: hard-stop.  
+- 3º: `exit`.  
+
+Grava `extract-checkpoint.json` com `cursor.fileOffset` / `blobIndex`.
+
+### `--resume`
+
+- Continua a **pass 1** a partir do offset.  
+- Abre TXT em **append** (`flags: 'a'`).  
+- **Não** reconstrói a lista de ways pendentes da pass 2 a partir do disco.
+
+### Limitações críticas (ler antes de confiar)
+
+| Situação | Comportamento seguro |
+|----------|----------------------|
+| Soft-stop **antes da pass 2** com logradouro pendente | Pending **não** está serializado. Mensagem: rode de novo **sem** confiar só no resume; ideal **recomeçar do zero** na pasta |
+| Soft-stop no meio da pass 2 | Idem: incompleto |
+| `--resume` após run que já zerou TXT com datasets diferentes | Risco de **misturar** linhas antigas/novas |
+| Rodar **sem** `--resume` | **Apaga todos** os `OSM_*.TXT` da pasta de saída (wipe total) |
+
+### Recomendações operacionais
+
+1. **Pastas separadas** por “produto” do extract:  
+   - `G:\osm-geo-se` → estado + município (já usado no enrich de `locais`)  
+   - `G:\osm-geo-se-streets` → bairro + logradouro  
+2. Para logradouro em máquina de mesa: deixe a job **até o fim** (pass 1 + pass 2).  
+3. Melhoria futura: persistir `pendingStreets` / `neededNodeIds` no checkpoint para resume real da pass 2; wipe **só** dos datasets ativos.
+
+## CLI
+
+```bash
+node extract-geocode-pbf.js [arquivo.osm.pbf] --out=DIR
+  --datasets=estado,municipio,bairro,logradouro
+  --addr-points
+  --resume | --no-resume
+  --node-cache=500000
+  --quiet
+```
+
+Env: `OSM_PBF_INPUT`, `OSM_GEO_OUT`.
+
+Helpers: `name-norm.js`, `uf-br.js` (bbox SE, prefixo IBGE→UF), `txt-at-writer.js`.
+
+## Testes
+
+- Fixture: `scripts/write-geocode-pbf.js` → `test/fixtures/geocode-mini.osm.pbf`  
+- `npm run test:extract` / `test/extract-geocode.test.js`  
+- Cobre município IBGE, logradouro em `OSM_LOGRADOURO_SP.TXT`, two-pass geom

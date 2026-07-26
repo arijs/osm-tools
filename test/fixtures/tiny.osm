@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osm-tools-fixtures">
+  <bounds minlat="-23.6" minlon="-46.7" maxlat="-23.5" maxlon="-46.6"/>
+  <node id="1" version="1" lat="-23.549990" lon="-46.629990">
+    <tag k="name" v="Node 1"/>
+    <tag k="source" v="fixture"/>
+  </node>
+  <node id="2" version="1" lat="-23.549980" lon="-46.629980">
+    <tag k="name" v="Node 2"/>
+    <tag k="source" v="fixture"/>
+  </node>
+  <node id="3" version="1" lat="-23.549970" lon="-46.629970">
+    <tag k="name" v="Node 3"/>
+    <tag k="source" v="fixture"/>
+  </node>
+  <way id="100001" version="1">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="1"/>
+    <tag k="highway" v="residential"/>
+  </way>
+</osm>
