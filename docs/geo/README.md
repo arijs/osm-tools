@@ -4,10 +4,12 @@ Documentação operacional e de desenho do caminho **OpenStreetMap (PBF) → arq
 
 | Documento | Conteúdo |
 |-----------|----------|
-| [**estado-atual.md**](./estado-atual.md) | O que já foi feito (Sudeste: estados + municípios) e números reais |
+| [**estado-atual.md**](./estado-atual.md) | O que já foi feito (Sudeste: estados, municípios, logradouro/bairro/addr) e números reais |
 | [**extract-e-artefatos.md**](./extract-e-artefatos.md) | `extract-geocode-pbf.js`, formatos TXT, two-pass, **resume**, wipe |
 | [**match-estado-municipio.md**](./match-estado-municipio.md) | CLI `osm:locais:enrich-geo`, IBGE, lições (distrito 9 dígitos, `admin_centre`) |
-| [**bairro-logradouro.md**](./bairro-logradouro.md) | **Próxima fase:** onde gravar (`dne_idx_*`), match, riscos |
+| [**bairro-logradouro.md**](./bairro-logradouro.md) | Extract feito, **match pendente**: o que muda no importador do ddsoft |
+| [**melhoria-extracao-coordenadas.md**](./melhoria-extracao-coordenadas.md) | **Diagnóstico medido** do cruzamento OSM↔DNE: por que falha, o que foi medido |
+| [**dne-geo-join.md**](./dne-geo-join.md) | **Especificação** do `dne-geo-join.js`: processo, contrato de saída, exemplos de linha |
 | [**operacao-comandos.md**](./operacao-comandos.md) | Receitas de CLI (copiar e colar) |
 
 Plano original (histórico): [../plans/osm-para-locais-geo.md](../plans/osm-para-locais-geo.md).  
@@ -24,10 +26,15 @@ Produto / schema de endereço: monorepo **ddsoft-online** → `docs/locais-tenan
 
 ```
 OSM PBF (osm-tools)
-    → OSM_*.TXT  (@)
+    → OSM_*.TXT  (@)                     ← feito: estado, município, logradouro, bairro, addr
         → locais (estado, município)     ← feito no Sudeste
-        → dne_idx_bairro / dne_idx_logradouro  ← próximo (geo no índice)
-            → materialização lazy em locais / locais_tenant no accept
+        → DNE_GEO_LOGRADOURO_{UF}.TXT    ← próximo: join no osm-tools (dne-geo-join.js)
+            → dne_idx_bairro / dne_idx_logradouro   (PHP carrega por log_nu, não casa mais)
+                → materialização lazy em locais / locais_tenant no accept
 ```
+
+**Mudança de desenho (2026-07-30):** o cruzamento OSM↔DNE **sai do PHP**. Casar por nome exige
+resolver o município da way (o OSM não traz: `addr:city` em 0,01 % das linhas), e isso é índice
+espacial de 793 mil ways — trabalho de ferramenta de dados. O PHP volta a ser importador.
 
 **Regra de ouro:** bairro e logradouro **não** estão cadastrados em massa em `locais` hoje; o índice DNE é a camada certa para geo de busca até a materialização.

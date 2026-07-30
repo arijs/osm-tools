@@ -1,6 +1,19 @@
 # Plano: próxima etapa do geocoder — OSM Sudeste → `locais` lat/lng
 
 > **Atualização 2026-07-26:** a documentação viva e operacional do pipeline (estado real do Sudeste, resume, bairro/logradouro, comandos) está em **[docs/geo/](../geo/README.md)**. Este arquivo permanece como plano histórico de desenho da fase 2a.
+>
+> **Atualização 2026-07-30 — o que este plano errou.** Três previsões daqui foram medidas e não se
+> confirmaram. Ficam registradas porque o plano ainda é lido como referência:
+>
+> | Previsto aqui | Medido |
+> |---------------|--------|
+> | “Logradouro: só ways com `highway=*` **e** `name`” | Deixa **praça de fora** — no Brasil praça é `leisure=park` (17 032 em SP contra 283 de `place=square`). `Praça` casava 35,9 % contra 86,3 % de `Rua`. Corrigido: coluna `kind` aceita área. |
+> | “Match logradouro: `nome_norm` + `id_municipio`” | **A way não tem município.** `addr:city` vem preenchido em 0,01 % das linhas. Sem resolver isso, nome comum (`Avenida Paulista`) fica ambíguo e sem coordenada. |
+> | “Fallback centróide município para mapa nunca vazio” (§Matching) | **Descartado.** Coordenada que não é da via envenena raio de entrega e ordenação por distância. Linha sem match fica vazia com `geo_status`. |
+>
+> O contrato de colunas de logradouro abaixo também está **desatualizado** — ver
+> [extract-e-artefatos.md](../geo/extract-e-artefatos.md). Diagnóstico e plano novos em
+> [melhoria-extracao-coordenadas.md](../geo/melhoria-extracao-coordenadas.md).
 
 ## Onde estamos
 

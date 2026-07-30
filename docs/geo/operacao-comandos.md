@@ -20,12 +20,15 @@ node index-pbf.js G:\sudeste-260725.osm.pbf
 node extract-geocode-pbf.js G:\sudeste-260725.osm.pbf --out=G:\osm-geo-se --datasets=estado,municipio
 ```
 
-### Bairro + logradouro (próxima fase — pasta **separada**)
+### Logradouro + bairro + addr (pasta **separada**) — usado em 2026-07-30
 
 ```bash
 set NODE_OPTIONS=--max-old-space-size=8192
-node extract-geocode-pbf.js G:\sudeste-260725.osm.pbf --out=G:\osm-geo-se-streets --datasets=bairro,logradouro
+node extract-geocode-pbf.js G:\sudeste-260725.osm.pbf --out=G:\osm-geo-se-streets2 --datasets=logradouro,bairro,addr
 ```
+
+`G:\osm-geo-se-streets` (extract anterior, sem `kind`/`name_alt`/`addr`) é a **linha de base** das
+medições — não apagar nem sobrescrever.
 
 ### Tudo de uma vez (cuidado com wipe da pasta)
 
@@ -52,14 +55,25 @@ php bin/console osm:locais:enrich-geo --dir=G:\osm-geo-se --dataset=municipio
 php bin/console osm:locais:enrich-geo --dir=G:\osm-geo-se --overwrite   # sobrescreve lat existente
 ```
 
-## Enrich no índice DNE (bairro/logradouro — **a implementar**)
+## Enrich no índice DNE (bairro/logradouro)
+
+> ⚠️ **Não apontar para `G:\osm-geo-se-streets2` ainda.** O extract novo emite praça/parque no mesmo
+> arquivo e o `DneOsmGeoEnricher` não lê a coluna `kind`; o caminho `byKeyBare` (que remove `praca`
+> do nome) produz **2 584 colisões medidas** em SP — `Rua Dois` recebendo a coordenada de
+> `Praça Dois`. Ver [bairro-logradouro.md](./bairro-logradouro.md) §O que muda no ddsoft.
 
 ```bash
-# após migration lat/lng em dne_idx_* e extract em G:\osm-geo-se-streets
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets --dataset=bairro --dry-run
+# seguro hoje: pasta antiga (sem área), só para bairro
 php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets --dataset=logradouro --uf=SP --dry-run
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets --dataset=logradouro --uf=SP
+
+# depois da guarda kind-aware:
+php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets2 --dataset=bairro --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets2 --dataset=logradouro --uf=SP --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets2 --dataset=logradouro --uf=SP
 ```
+
+Opções úteis: `--overwrite` (default é só `lat IS NULL`), `--shard=N` / `--shard-from` / `--shard-to`
+(quando o extract roda com `--shard-lines`), `--max-rows` / `--max-seconds`, `--memory=4G`.
 
 ## Testes
 
