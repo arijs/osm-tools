@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+.env.local
 
 # Large generated fixtures (~20MB / ~200MB uncompressed XML) — do not commit
 test/fixtures/large20.osm

@@ -1,6 +1,6 @@
 # Estado atual do pipeline (Sudeste BR)
 
-**Última consolidação:** 2026-07-30 (extract de logradouro/bairro/addr com `kind` + `name_alt`).
+**Última consolidação:** 2026-07-30 (join DNE↔OSM + envelope + exclusão multi-município + load prejoined no ddsoft).
 
 ## Fonte OSM
 
@@ -64,26 +64,49 @@ Pasta `G:\osm-geo-se-streets2` (2026-07-30, `eof: true`). `G:\osm-geo-se-streets
 | Bairro | 30 906 (28 206 com geom; 2 696 em `XX`) |
 | Addr point (`addr:street`) | 205 660 |
 
-Ganho medido na capital paulista com o extract novo: **81,1 % → 84,3 %** de linhas do DNE com
-candidato, e **87,8 %** com a cascata determinística completa. `Praça` saiu de 35,9 % para 76,1 %.
-Detalhe em [melhoria-extracao-coordenadas.md](./melhoria-extracao-coordenadas.md) §10.6.
+## Fase concluída: `dne-geo-join.js` (OSM ↔ DNE)
+
+Implementado e rodado no Sudeste. Spec: [dne-geo-join.md](./dne-geo-join.md).
+
+| UF | `ok` | % | `ambiguo` | `sem_nome_osm` |
+|----|-----:|--:|----------:|---------------:|
+| SP | 263 478 | **77,1 %** | 22 281 | 56 054 |
+| ES | 23 972 | **74,9 %** | 735 | 7 286 |
+| RJ | 74 588 | **71,9 %** | 8 001 | 21 134 |
+| MG | 70 582 | **54,7 %** | 13 812 | 44 535 |
+
+Capital paulista: **88,6 %**. Saída: `DNE_GEO_LOGRADOURO_{UF}.TXT`, `DNE_GEO_BAIRRO_{UF}.TXT`,
+`DNE_GEO_RELATORIO_{UF}.json`.
+
+Pós-2026-07-30 no join:
+
+- **Envelope** (fase 5c): recupera `fora_do_footprint` com 1 candidato a ≤1 km da mancha (buraco na grade).
+- **Exclusão multi-município** (fase 5d): cluster usado por 2+ `loc_nu` → dono único; perdedores `conflito_municipio`.
+
+## Fase pronta no código: load no índice DNE (ddsoft)
+
+`osm:dne:enrich-geo` prefere `DNE_GEO_*` por `log_nu` / `bai_nu` quando o arquivo existe na `--dir`.
+Match por nome em `OSM_*` fica como legado (`--legacy-match`).
+
+```bash
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=bairro
+# opcional: --uf=SP para uma UF só
+```
 
 ## O que **não** está feito
 
 | Item | Status |
 |------|--------|
-| **Match logradouro em volume** | CLI existe, mas a chave `UF\|nome` só resolve nome único no estado — `Avenida Paulista` fica ambígua. Ver [bairro-logradouro.md](./bairro-logradouro.md) §Match |
-| **`dne-geo-join.js`** (footprint municipal + cascata) | Não existe — é o próximo passo |
-| **Guarda kind-aware no `DneOsmGeoEnricher`** | **Bloqueia** rodar o enricher contra `streets2`: 2 584 colisões medidas (`Rua Dois` × `Praça Dois`) |
-| `name_alt` no enricher PHP | Não lido (+1,1 pp parados) |
-| Consumidor de `OSM_ADDR_POINT_*` | Nenhum; 205 660 pontos com CEP sem uso |
-| `geo_origem` / `geo_status` / precisão | Sem migration — virou pré-requisito, não mais “recomendado” |
+| **Apply em volume** do prejoined no MySQL de dev/prod | Código pronto; rodar dry-run → apply por UF |
+| `geo_origem` / `geo_status` / precisão no schema | Sem migration — útil para reprocessar regra fraca |
+| Consumidor de `OSM_ADDR_POINT_*` (postcode / nomear way) | Nenhum; 205 660 pontos com CEP sem uso |
 | Materialização em massa bairro/logradouro em `locais` | Lazy no accept; não é pré-requisito para geo no índice |
 | Expor lat/lng na `BuscaEnderecoService` | Parcial / futuro |
+| Match legado por nome no PHP | **Não usar** contra `streets2` (2 584 colisões kind) |
 
-## Dimensão do índice DNE (contexto para a próxima fase)
-
-Valores observados no MySQL do ddsoft (ordem de grandeza):
+## Dimensão do índice DNE (contexto)
 
 | Tabela | Total BR | SE (SP/RJ/MG/ES) |
 |--------|---------:|-----------------:|
@@ -91,16 +114,17 @@ Valores observados no MySQL do ddsoft (ordem de grandeza):
 | `dne_idx_logradouro` | ~1,2 M | ~606 k |
 | `dne_idx_localidade` | ~11 k | — |
 
-Ver [bairro-logradouro.md](./bairro-logradouro.md).
-
 ## Lições já pagas (não reaprender)
 
 1. **JSON de inventário ~10 MB** ≠ dados de geocoder — era `coordLayout.blocks`.  
 2. **99 % logradouros em `XX`**: ways depois de 141 M nodes; LRU de 500 k não serve → **two-pass**.  
 3. **Município sem geo**: relation tem IBGE, node `place=city` tem ponto sem IBGE → cruzar nome+UF **ou** resolver `admin_centre`.  
-4. **IBGE 9 dígitos** = distrito; truncar a 7 e casar como município **erra o ponto** (ex. subúrbio → código do município).  
+4. **IBGE 9 dígitos** = distrito; truncar a 7 e casar como município **erra o ponto**.  
 5. **`updated=0` em estado** com coords no TXT costuma ser `already` (onlyEmpty), não falha de match.  
-6. **Rua famosa que “não existe no OSM” quase sempre existe** — é ambiguidade, não ausência. `Avenida Paulista`: 207 ways em SP, 19 `loc_nu` no DNE. Medir dentro de um município antes de concluir que falta dado.  
-7. **Praça não é `highway`** — é `leisure=park` (17 032 em SP) ou `place=square` (283). Filtrar só por `highway` perdia 2/3 das praças do DNE.  
-8. **`LOG_VAR_LOG` do DNE não serve** para variantes: 3 nomes casam em SP inteiro. O lado OSM (`alt_name` etc.) rende ~10 % das linhas.  
-9. **`addr:street` como fonte de nome rende quase nada** (+0,1 pp). O valor dele é `addr:postcode` e nomear way sem `name`, e isso não foi testado.
+6. **Rua famosa que “não existe no OSM” quase sempre existe** — é ambiguidade, não ausência.  
+7. **Praça não é `highway`** — é `leisure=park` ou `place=square`.  
+8. **`LOG_VAR_LOG` do DNE não serve** para variantes. O lado OSM (`alt_name`) rende ~10 % das linhas.  
+9. **`addr:street` como fonte de nome rende quase nada** (+0,1 pp).  
+10. **Match por nome no PHP não escala** — join no osm-tools; PHP só carrega por chave.  
+11. **Dilatar footprint uniforme** mistura cidades vizinhas 1:1 com o ganho — preferir envelope seletivo.  
+12. **Cluster multi-município em `ok`** é pior que vazio — exclusão pós-casamento.

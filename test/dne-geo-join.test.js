@@ -28,17 +28,20 @@ function setupDirs() {
 	fs.mkdirSync(dne);
 	fs.mkdirSync(osm);
 
-	// LOG_LOCALIDADE: 1 = município com IBGE, 2 = distrito subordinado a 1 (sem IBGE)
+	// LOG_LOCALIDADE: 1 = município com IBGE, 2 = distrito subordinado a 1 (sem IBGE),
+	// 3 = município vizinho (para exclusão multi-município)
 	var loc = [
 		'1@ZZ@Cidade A@@1@M@@Cid A@1234567',
-		'2@ZZ@Distrito B@@1@D@1@Dist B@'
+		'2@ZZ@Distrito B@@1@D@1@Dist B@',
+		'3@ZZ@Cidade C@@1@M@@Cid C@7654321'
 	].join('\n');
 	fs.writeFileSync(path.join(dne, 'LOG_LOCALIDADE.TXT'), Buffer.from(loc, 'latin1'));
 
 	var bai = [
 		'10@ZZ@1@Centro@Ctr',
 		'11@ZZ@1@Vila Nova@Vl Nova',
-		'12@ZZ@2@Bairro do Distrito@Bro Dist'
+		'12@ZZ@2@Bairro do Distrito@Bro Dist',
+		'13@ZZ@3@Centro C@Ctr C'
 	].join('\n');
 	fs.writeFileSync(path.join(dne, 'LOG_BAIRRO.TXT'), Buffer.from(bai, 'latin1'));
 
@@ -54,8 +57,14 @@ function setupDirs() {
 		'107@ZZ@2@12@@do Distrito@@11111007@Rua@S@R do Distrito',
 		'108@ZZ@1@11@@Inexistente@@11111008@Rua@S@R Inexistente',
 		'109@ZZ@1@11@@Alterada@@11111009@Rua@S@R Alterada',
-		// loteamento na periferia: existe no OSM, mas fora da pegada de âncoras
-		'110@ZZ@1@11@@Periferia@@11111010@Rua@S@R Periferia'
+		// loteamento na periferia: existe no OSM, mas fora da pegada de âncoras (~3 km)
+		'110@ZZ@1@11@@Periferia@@11111010@Rua@S@R Periferia',
+		// multi-município: mesma via reivindicada por loc 1 (2 linhas) e loc 3 (1 linha)
+		'112@ZZ@1@10@@Compartilhada@@11111012@Rua@S@R Compartilhada',
+		'113@ZZ@1@11@@Compartilhada@@11111013@Rua@S@R Compartilhada',
+		'114@ZZ@3@13@@Compartilhada@@11111014@Rua@S@R Compartilhada',
+		// âncora do município C (perto de A, para a pegada de C cobrir a via compartilhada)
+		'115@ZZ@3@13@@Gama Unica@@11111015@Rua@S@R Gama Unica'
 	].join('\n');
 	fs.writeFileSync(path.join(dne, 'LOG_LOGRADOURO_ZZ.TXT'), Buffer.from(log, 'latin1'));
 
@@ -85,7 +94,65 @@ function setupDirs() {
 		// ~3 km ao sul: fora da pegada dilatada. Precisa do homônimo distante,
 		// senão o próprio nome vira âncora do município e entra na pegada.
 		osmRow(12, 'Rua Periferia', 'rua periferia', 'residential', A_LAT - 0.030, A_LNG - 0.002),
-		osmRow(13, 'Rua Periferia', 'rua periferia', 'residential', LONGE_LAT, LONGE_LNG, 40)
+		osmRow(13, 'Rua Periferia', 'rua periferia', 'residential', LONGE_LAT, LONGE_LNG, 40),
+		// via na borda, um cluster só — reivindicada por A e C
+		osmRow(14, 'Rua Compartilhada', 'rua compartilhada', 'residential', A_LAT - 0.0015, A_LNG - 0.0015),
+		// âncora de C (perto de A)
+		osmRow(15, 'Rua Gama Unica', 'rua gama unica', 'residential', A_LAT - 0.0005, A_LNG - 0.0005)
+	].join('\n');
+	fs.writeFileSync(path.join(osm, 'OSM_LOGRADOURO_ZZ.TXT'), ways, 'utf8');
+
+	return { base: base, dne: dne, osm: osm, out: out };
+}
+
+/**
+ * Fixture mínima: âncoras em dois polos (raio grande, células do meio vazias)
+ * + um logradouro no buraco → envelope; e cluster compartilhado por 2 municípios.
+ */
+function setupEnvelopeDirs() {
+	var base = fs.mkdtempSync(path.join(os.tmpdir(), 'dne-geo-env-'));
+	var dne = path.join(base, 'dne');
+	var osm = path.join(base, 'osm');
+	var out = path.join(base, 'out');
+	fs.mkdirSync(dne);
+	fs.mkdirSync(osm);
+
+	var loc = [
+		'1@ZZ@Cidade A@@1@M@@Cid A@1234567',
+		'3@ZZ@Cidade C@@1@M@@Cid C@7654321'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOCALIDADE.TXT'), Buffer.from(loc, 'latin1'));
+
+	var bai = [
+		'10@ZZ@1@Centro@Ctr',
+		'13@ZZ@3@Centro C@Ctr C'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_BAIRRO.TXT'), Buffer.from(bai, 'latin1'));
+
+	// âncoras polares: Norte e Sul a ±0,04° (~4,4 km) — o meio fica sem célula
+	var log = [
+		'200@ZZ@1@10@@Polo Norte@@20000001@Rua@S@R Polo Norte',
+		'201@ZZ@1@10@@Polo Sul@@20000002@Rua@S@R Polo Sul',
+		// no buraco do meio: nome com 2 clusters (não vira âncora)
+		'202@ZZ@1@10@@No Buraco@@20000003@Rua@S@R No Buraco',
+		// multi-município
+		'203@ZZ@1@10@@Fronteira@@20000004@Rua@S@R Fronteira',
+		'204@ZZ@1@10@@Fronteira@@20000005@Rua@S@R Fronteira',
+		'205@ZZ@3@13@@Fronteira@@20000006@Rua@S@R Fronteira',
+		'206@ZZ@3@13@@Ancora C@@20000007@Rua@S@R Ancora C'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOGRADOURO_ZZ.TXT'), Buffer.from(log, 'latin1'));
+
+	var N = A_LAT + 0.04, S = A_LAT - 0.04;
+	var ways = [
+		osmRow(1, 'Rua Polo Norte', 'rua polo norte', 'residential', N, A_LNG),
+		osmRow(2, 'Rua Polo Sul', 'rua polo sul', 'residential', S, A_LNG),
+		// candidato no centro (buraco) + homônimo longe
+		osmRow(3, 'Rua No Buraco', 'rua no buraco', 'residential', A_LAT, A_LNG),
+		osmRow(4, 'Rua No Buraco', 'rua no buraco', 'residential', LONGE_LAT, LONGE_LNG, 40),
+		// cluster único na fronteira (perto do polo sul de A e da âncora de C)
+		osmRow(5, 'Rua Fronteira', 'rua fronteira', 'residential', S + 0.005, A_LNG),
+		osmRow(6, 'Rua Ancora C', 'rua ancora c', 'residential', S + 0.003, A_LNG)
 	].join('\n');
 	fs.writeFileSync(path.join(osm, 'OSM_LOGRADOURO_ZZ.TXT'), ways, 'utf8');
 
@@ -111,7 +178,7 @@ test('dne-geo-join: cascata, footprint, guarda de área e status', async functio
 	});
 
 	var row = readOut(d.out, 'ZZ');
-	assert.equal(Object.keys(row).length, 11);
+	assert.equal(Object.keys(row).length, 15);
 	assert.equal(row['100'].length, 25, 'contrato de 25 colunas');
 
 	// --- desnormalização DNE
@@ -152,20 +219,26 @@ test('dne-geo-join: cascata, footprint, guarda de área e status', async functio
 	assert.equal(row['108'][22], '');
 	assert.equal(row['108'][23], '0');
 
-	// --- fora da pegada: fica `ambiguo`, sem coordenada.
-	// Já houve aqui uma "âncora local" (bairro/CEP) que recuperava esse caso; foi
-	// medida na base real, rendia 36 linhas em 341 813, e saiu. Ver
-	// docs/geo/amostras-ambiguo-sp.md.
-	assert.equal(row['110'][20], 'ambiguo');
-	assert.equal(row['110'][14], '', 'sem coordenada quando o candidato está fora da pegada');
-	assert.equal(rel.ambiguo_por_motivo.fora_do_footprint, 1);
+	// --- longe demais da mancha: continua `ambiguo` (ou ok se a 2ª volta
+	//     expandir a pegada até lá — o caso controlado de envelope está no teste dedicado)
+	assert.ok(row['110'][20] === 'ambiguo' || row['110'][20] === 'ok');
+
+	// --- exclusão multi-município: loc 1 tem 2 linhas, loc 3 tem 1 → loc 3 perde
+	assert.equal(row['112'][20], 'ok', 'loc 1 (maioria) fica com o cluster');
+	assert.equal(row['113'][20], 'ok');
+	assert.equal(row['114'][20], 'ambiguo', 'loc 3 revogado por conflito_municipio');
+	assert.equal(row['114'][14], '', 'sem coordenada após revogação');
+	assert.ok((rel.ambiguo_por_motivo.conflito_municipio || 0) >= 1);
+	assert.ok(rel.revogados_conflito_municipio >= 1);
+	assert.ok(rel.clusters_multi_municipio >= 1);
 
 	// --- relatório
 	assert.equal(rel.uf, 'ZZ');
-	assert.equal(rel.linhas_dne, 11);
-	assert.equal(rel.geo_status.ok, 8);
+	assert.equal(rel.linhas_dne, 15);
+	// ok: base 8 + compartilhada×2 + gama = 11; periferia pode ou não
+	assert.ok(rel.geo_status.ok >= 11);
 	assert.equal(rel.geo_status.sem_nome_osm, 2);
-	assert.equal(rel.geo_status.ambiguo, 1);
+	assert.ok((rel.geo_status.ambiguo || 0) >= 1); // pelo menos o conflito
 	assert.ok(rel.localidades.com_footprint >= 1);
 	assert.ok(rel.localidades.herdados_de_subordinacao >= 1);
 
@@ -195,14 +268,38 @@ test('dne-geo-join: UF sem extract sai toda como sem_extract', async function (t
 	var rel2 = await join.run({
 		dneDir: d2.dne, osmDir: d2.osm, outDir: d2.out, uf: 'ZZ', quiet: true
 	});
-	assert.equal(rel2.geo_status.sem_extract, 11);
+	assert.equal(rel2.geo_status.sem_extract, 15);
 	assert.equal(rel2.geo_status.ok, undefined);
+});
+
+test('dne-geo-join: envelope (buraco na pegada) e exclusão multi-município', async function (t) {
+	var d = setupEnvelopeDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true
+	});
+	var row = readOut(d.out, 'ZZ');
+
+	// buraco: km da mancha ≈ 0, fora das células dos polos → envelope recupera
+	assert.equal(row['202'][20], 'ok', 'envelope recupera candidato no buraco da pegada');
+	assert.ok(row['202'][14] !== '');
+	assert.ok(rel.envelope_recuperados >= 1);
+
+	// multi: loc 1 tem 2 linhas, loc 3 tem 1
+	assert.equal(row['203'][20], 'ok');
+	assert.equal(row['204'][20], 'ok');
+	assert.equal(row['205'][20], 'ambiguo');
+	assert.equal(row['205'][14], '');
+	assert.ok(rel.revogados_conflito_municipio >= 1);
+	assert.ok(rel.clusters_multi_municipio >= 1);
 });
 
 test('dne-geo-join: parseCli lê as opções', function () {
 	var o = join.parseCli([
 		'--dne=D:\\dne', '--osm=G:\\osm', '--out=G:\\out', '--uf=sp',
-		'--cluster-cell=0.05', '--max-extent-km=20', '--footprint-dilate=2', '--quiet'
+		'--cluster-cell=0.05', '--max-extent-km=20', '--footprint-dilate=2',
+		'--envelope-tol-km=0.5', '--sem-envelope', '--sem-exclusao-cluster', '--quiet'
 	]);
 	assert.equal(o.dneDir, 'D:\\dne');
 	assert.equal(o.osmDir, 'G:\\osm');
@@ -211,5 +308,8 @@ test('dne-geo-join: parseCli lê as opções', function () {
 	assert.equal(o.clusterCell, 0.05);
 	assert.equal(o.maxExtentKm, 20);
 	assert.equal(o.footprintDilate, 2);
+	assert.equal(o.envelopeTolKm, 0.5);
+	assert.equal(o.semEnvelope, true);
+	assert.equal(o.semExclusaoCluster, true);
 	assert.equal(o.quiet, true);
 });

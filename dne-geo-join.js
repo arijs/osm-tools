@@ -12,6 +12,9 @@
  *     --footprint-cell=0.01 célula do footprint municipal (graus)
  *     --max-extent-km=15    acima disso, com mais de um candidato, vira `ambiguo`
  *     --footprint-dilate=1  células de halo na pegada municipal
+ *     --envelope-tol-km=1   recupera fora_do_footprint com 1 candidato a ≤N km da mancha
+ *     --sem-envelope        desliga a recuperação por envelope
+ *     --sem-exclusao-cluster desliga a exclusividade de cluster entre municípios
  *     --quiet
  */
 
@@ -262,6 +265,9 @@ async function run(opts) {
 	var footprintCell = opts.footprintCell || geo.CELL_FOOTPRINT;
 	var maxExtentKm = opts.maxExtentKm || 15;
 	var dilate = opts.footprintDilate == null ? 1 : opts.footprintDilate;
+	var envelopeTolKm = opts.envelopeTolKm == null ? 1 : opts.envelopeTolKm;
+	var useEnvelope = opts.semEnvelope ? false : true;
+	var useExclusao = opts.semExclusaoCluster ? false : true;
 
 	log('DNE  : ' + opts.dneDir);
 	log('OSM  : ' + opts.osmDir);
@@ -290,6 +296,7 @@ async function run(opts) {
 	log('[3/6] clusters…');
 	var built = buildClusters(osm.byName, clusterCell);
 	var clusters = built.clusters;
+	for (var ci = 0; ci < clusters.length; ci++) clusters[ci].id = ci;
 	var derived = buildDerivedIndexes(built.byName);
 	// name_alt → índices dos clusters do nome principal
 	var altIdx = new Map();
@@ -477,6 +484,113 @@ async function run(opts) {
 		for (var w3 = 0; w3 < rows.length; w3++) {
 			if (rows[w3].status === 'pendente') rows[w3].status = 'sem_nome_osm';
 		}
+
+		// ---- Fase 5c: buraco na pegada — candidato único perto da mancha
+		// Não dilata o footprint (halo metropolitano mistura cidades vizinhas).
+		// Entre os candidatos de nome, conta quantos caem a ≤ tol km da mancha
+		// (centro−raio das âncoras). Se sobra exatamente 1 e a extensão é ok → aceita.
+		var envelopeOk = 0;
+		if (useEnvelope && envelopeTolKm > 0) {
+			for (var e5 = 0; e5 < rows.length; e5++) {
+				var re = rows[e5];
+				if (re.status !== 'ambiguo' || re.motivo !== 'fora_do_footprint') continue;
+				var cenE = centroLoc.get(re.loc_nu);
+				if (!cenE) continue;
+				var gotE = cascadeCandidates(re, idx, clusters);
+				if (!gotE.cand.length) continue;
+				var pertoE = [];
+				for (var pe = 0; pe < gotE.cand.length; pe++) {
+					var agP = clusters[gotE.cand[pe]].agg;
+					var dP = Math.max(0, geo.distKm(cenE.lat, cenE.lng, agP.lat, agP.lng) - cenE.raio);
+					if (dP <= envelopeTolKm) pertoE.push(gotE.cand[pe]);
+				}
+				if (pertoE.length !== 1) continue;
+				var alvoE = clusters[pertoE[0]];
+				var agE = alvoE.agg;
+				var extE = Math.max(
+					(agE.latMax - agE.latMin) * 111,
+					(agE.lngMax - agE.lngMin) * 102
+				);
+				if (extE > maxExtentKm) continue;
+				re.cluster = alvoE;
+				re.motivo = '';
+				re.regra = gotE.regra === 'exato' && re.ehArea && !alvoE.hasVia
+					? 'area' : (gotE.regra || 'exato');
+				re.status = 'ok';
+				re.nCand = 1;
+				re.via_envelope = true;
+				envelopeOk++;
+				var bbE = porBairro.get(re.bai_ini);
+				if (!bbE) porBairro.set(re.bai_ini, bbE = { sLat: 0, sLng: 0, n: 0 });
+				bbE.sLat += agE.lat;
+				bbE.sLng += agE.lng;
+				bbE.n++;
+			}
+			if (envelopeOk) log('      envelope: recuperou ' + envelopeOk + ' (tol=' + envelopeTolKm + ' km)');
+		}
+		stats.envelope_recuperados = envelopeOk;
+
+		// ---- Fase 5d: cluster usado por 2+ municípios → dono único
+		// Uma via física é de uma cidade só. Preferência: loc_nu com mais linhas ok;
+		// empate → âncora municipal mais próxima do centroide do cluster.
+		var multiAntes = 0, revogados = 0, clustersMulti = 0;
+		if (useExclusao) {
+			var claim = new Map(); // clusterId -> Map(loc_nu -> count)
+			for (var x = 0; x < rows.length; x++) {
+				var rx = rows[x];
+				if (rx.status !== 'ok' || !rx.cluster) continue;
+				var cid = rx.cluster.id;
+				var m = claim.get(cid);
+				if (!m) claim.set(cid, m = new Map());
+				m.set(rx.loc_nu, (m.get(rx.loc_nu) || 0) + 1);
+			}
+			var ownerOf = new Map(); // clusterId -> loc_nu
+			claim.forEach(function (locs, cid) {
+				if (locs.size < 2) {
+					ownerOf.set(cid, locs.keys().next().value);
+					return;
+				}
+				clustersMulti++;
+				var bestLoc = null, bestN = -1, bestDist = Infinity;
+				var aggC = clusters[cid].agg;
+				locs.forEach(function (n, locNu) {
+					var cen = centroLoc.get(locNu);
+					var d = cen ? geo.distKm(cen.lat, cen.lng, aggC.lat, aggC.lng) : 1e9;
+					if (n > bestN || (n === bestN && d < bestDist)) {
+						bestN = n;
+						bestDist = d;
+						bestLoc = locNu;
+					}
+				});
+				ownerOf.set(cid, bestLoc);
+			});
+			for (var y = 0; y < rows.length; y++) {
+				var ry = rows[y];
+				if (ry.status !== 'ok' || !ry.cluster) continue;
+				var cl = claim.get(ry.cluster.id);
+				if (cl && cl.size >= 2) multiAntes++;
+			}
+			for (var z3 = 0; z3 < rows.length; z3++) {
+				var r3 = rows[z3];
+				if (r3.status !== 'ok' || !r3.cluster) continue;
+				var own3 = ownerOf.get(r3.cluster.id);
+				if (own3 === undefined || own3 === r3.loc_nu) continue;
+				var nLocs = claim.get(r3.cluster.id).size;
+				r3.cluster = null;
+				r3.regra = '';
+				r3.status = 'ambiguo';
+				r3.motivo = 'conflito_municipio';
+				r3.nCand = nLocs;
+				revogados++;
+			}
+			if (clustersMulti) {
+				log('      exclusão multi-município: ' + clustersMulti +
+					' clusters, ' + revogados + ' linhas revogadas (de ' + multiAntes + ' em disputa)');
+			}
+		}
+		stats.clusters_multi_municipio = clustersMulti;
+		stats.linhas_em_cluster_multi = multiAntes;
+		stats.revogados_conflito_municipio = revogados;
 	}
 
 	// ---- Fase 6: emitir
@@ -578,6 +692,10 @@ async function run(opts) {
 		ambiguo_distancia_ate_a_mancha: distAmbiguo,
 		ambiguo_exemplos: exemplosAmbiguo,
 		rodadas: stats.rodadas,
+		envelope_recuperados: stats.envelope_recuperados || 0,
+		clusters_multi_municipio: stats.clusters_multi_municipio || 0,
+		linhas_em_cluster_multi: stats.linhas_em_cluster_multi || 0,
+		revogados_conflito_municipio: stats.revogados_conflito_municipio || 0,
 		bairros_com_bbox: bairroAgg.size
 	};
 	fs.writeFileSync(
@@ -606,6 +724,9 @@ function parseCli(argv) {
 		else if (a.indexOf('--footprint-cell=') === 0) o.footprintCell = Number(a.slice(17));
 		else if (a.indexOf('--max-extent-km=') === 0) o.maxExtentKm = Number(a.slice(16));
 		else if (a.indexOf('--footprint-dilate=') === 0) o.footprintDilate = Number(a.slice(19));
+		else if (a.indexOf('--envelope-tol-km=') === 0) o.envelopeTolKm = Number(a.slice(18));
+		else if (a === '--sem-envelope') o.semEnvelope = true;
+		else if (a === '--sem-exclusao-cluster') o.semExclusaoCluster = true;
 		else if (a === '--quiet') o.quiet = true;
 	}
 	return o;

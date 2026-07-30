@@ -1,10 +1,9 @@
 # Coordenadas de bairro e logradouro
 
-> **Atualizado 2026-07-30.** O extract desta fase **está feito** (`G:\osm-geo-se-streets2`, com
-> `kind`, `name_alt` e `addr`). O que sobrou é o **match** — e a medição mostrou que a estratégia
-> descrita originalmente aqui (`ufe_sg` + `nome_norm` + `loc_nu`) **não escala**. Ver
-> [§ Match — o que mudou](#match--o-que-mudou) e o diagnóstico completo em
-> [melhoria-extracao-coordenadas.md](./melhoria-extracao-coordenadas.md).
+> **Atualizado 2026-07-30.** Extract **e** `dne-geo-join.js` estão feitos. O PHP **não casa mais por
+> nome**: carrega `DNE_GEO_LOGRADOURO_{UF}.TXT` / `DNE_GEO_BAIRRO_{UF}.TXT` por `log_nu` / `bai_nu`.
+> A estratégia antiga (`ufe_sg` + `nome_norm`) **não escala** e não deve rodar contra `streets2`.
+> Spec do join: [dne-geo-join.md](./dne-geo-join.md).
 
 ## Por que **não** é `UPDATE locais` (ainda)
 
@@ -141,18 +140,17 @@ O extract novo emite praças e parques no mesmo arquivo. O `DneOsmGeoEnricher` *
 Sem guarda, uma rua recebe a coordenada de uma praça homônima. **Não apontar o enricher atual para
 `G:\osm-geo-se-streets2` sem antes aplicar a guarda kind-aware.**
 
-### 2. Mudanças necessárias no `DneOsmGeoEnricher`
+### 2. Caminho atual no `DneOsmGeoEnricher` (ddsoft)
 
-| # | Mudança | Onde | Por quê |
-|---|---------|------|---------|
-| 1 | Ler coluna **3 = `kind`** e classificar `square`/`park` como área | `enrichLogradouro`, laço de leitura | sem isso, os 2 584 colidem |
-| 2 | Guarda kind-aware: candidato de área só casa com `TLO_TX` ∈ {Praça, Largo, Parque, Jardim, Vila, Área} | antes de popular `byKey`/`byKeyBare` | impede `Rua X` ← praça |
-| 3 | Ler colunas **17/18 = `name_alt`/`name_alt_norm`** e indexar como chave adicional | mesmo laço | +1,1 pp de graça |
-| 4 | Preferir `osm_type=way` sobre `node` no desempate | `score` (hoje `100 + way_node_count`) | nó tem bbox degenerada; já funciona por acidente, deixar explícito |
-| 5 | Quando o `dne-geo-join.js` existir: **trocar o match por load** de `DNE_GEO_LOGRADOURO_{UF}.TXT` por `log_nu` | novo método `loadPrejoined()` | tira 400 linhas de heurística do PHP |
+| # | Status | O quê |
+|---|--------|--------|
+| 1 | **Feito** | `loadPrejoinedLogradouro` — lê `DNE_GEO_LOGRADOURO_{UF}.TXT` por `log_nu`, só `geo_status=ok` |
+| 2 | **Feito** | `loadPrejoinedBairro` — lê `DNE_GEO_BAIRRO_{UF}.TXT` por `bai_nu` (com `--uf=`) |
+| 3 | **Feito** | Preferência automática: se `DNE_GEO_*` existe na `--dir`, usa prejoined |
+| 4 | Legado | Match por nome em `OSM_*` só com `--legacy-match` — **não** apontar a `streets2` |
 
-As colunas 1–17 **não mudaram de posição** — `RowParser` lê por índice, então nada quebra hoje.
-Só a coluna 3 mudou de *significado* (`highway` → `kind`, superconjunto), e ela não era lida.
+O caminho por nome **não** recebe guarda kind-aware nem `name_alt`: o join no osm-tools já resolve
+isso. Não investir em enriquecer o match PHP.
 
 ### 3. `--dataset=bairro` agora tem insumo
 
@@ -195,13 +193,12 @@ de regra fraca, nem para a busca decidir se mostra o ponto no mapa.
 - [x] Migration `lat`/`lng` + bbox em `dne_idx_bairro` e `dne_idx_logradouro` (`Version20260726000100`)
 - [x] Extract `logradouro,bairro,addr` → `G:\osm-geo-se-streets2`
 - [x] `DneOsmGeoEnricher` + CLI `osm:dne:enrich-geo`
-- [ ] **Guarda kind-aware no `DneOsmGeoEnricher`** (bloqueia rodar contra `streets2`)
-- [ ] Ler `name_alt` no enricher
-- [ ] `dne-geo-join.js` no osm-tools (footprint municipal + cascata determinística)
-- [ ] Trocar match por load de `DNE_GEO_LOGRADOURO_{UF}.TXT` no PHP
-- [ ] Migration `geo_origem` / `geo_status` / `geo_atualizado_em`
-- [ ] Dry-run SP → apply → métricas de cobertura
-- [ ] Docs ddsoft §11 + changelog
+- [x] `dne-geo-join.js` (footprint + cascata + envelope + exclusão multi-mun)
+- [x] Load prejoined por `log_nu` / `bai_nu` no PHP
+- [ ] Dry-run SP → apply → métricas de cobertura no MySQL
+- [ ] Migration `geo_origem` / `geo_status` / `geo_atualizado_em` (opcional, útil)
+- [ ] Docs ddsoft §11 + changelog do apply em volume
+- [ ] Expor lat/lng na busca quando o índice tiver geo
 
 ## Ligações
 

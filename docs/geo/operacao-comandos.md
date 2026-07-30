@@ -55,25 +55,41 @@ php bin/console osm:locais:enrich-geo --dir=G:\osm-geo-se --dataset=municipio
 php bin/console osm:locais:enrich-geo --dir=G:\osm-geo-se --overwrite   # sobrescreve lat existente
 ```
 
-## Enrich no índice DNE (bairro/logradouro)
-
-> ⚠️ **Não apontar para `G:\osm-geo-se-streets2` ainda.** O extract novo emite praça/parque no mesmo
-> arquivo e o `DneOsmGeoEnricher` não lê a coluna `kind`; o caminho `byKeyBare` (que remove `praca`
-> do nome) produz **2 584 colisões medidas** em SP — `Rua Dois` recebendo a coordenada de
-> `Praça Dois`. Ver [bairro-logradouro.md](./bairro-logradouro.md) §O que muda no ddsoft.
+## Join OSM ↔ DNE (osm-tools)
 
 ```bash
-# seguro hoje: pasta antiga (sem área), só para bairro
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets --dataset=logradouro --uf=SP --dry-run
-
-# depois da guarda kind-aware:
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets2 --dataset=bairro --dry-run
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets2 --dataset=logradouro --uf=SP --dry-run
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-se-streets2 --dataset=logradouro --uf=SP
+cd D:\dev\github\osm-tools
+set NODE_OPTIONS=--max-old-space-size=8192
+node dne-geo-join.js --dne=D:\dev\ddsoft\ddsoft-online\_ignore\Delimitado --osm=G:\osm-geo-se-streets2 --out=G:\dne-geo-local --uf=SP
+# demais UFs: --uf=RJ | MG | ES
 ```
 
-Opções úteis: `--overwrite` (default é só `lat IS NULL`), `--shard=N` / `--shard-from` / `--shard-to`
-(quando o extract roda com `--shard-lines`), `--max-rows` / `--max-seconds`, `--memory=4G`.
+Pasta canônica da saída boa (2026-07-30): **`G:\dne-geo-local`**. `G:\dne-geo` é run mais antigo
+(mesmos TXT de logradouro/bairro; relatórios menores).
+
+Flags úteis: `--envelope-tol-km=1` (default), `--sem-envelope`, `--sem-exclusao-cluster`, `--quiet`.
+
+## Enrich no índice DNE (bairro/logradouro) — preferir `DNE_GEO_*`
+
+A CLI **prefere** `DNE_GEO_LOGRADOURO_{UF}.TXT` / `DNE_GEO_BAIRRO_{UF}.TXT` na `--dir` (load por
+chave). Match por nome em `OSM_*` só com `--legacy-match` — **não** usar contra `streets2`
+(2 584 colisões kind medidas).
+
+```bash
+cd D:\dev\ddsoft\ddsoft-online
+
+# caminho certo: pasta do join
+# sem --uf: processa todas as UFs com DNE_GEO_* na pasta (SP,RJ,MG,ES, …)
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=bairro
+
+# uma UF só
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro --uf=SP --dry-run
+```
+
+Opções: `--uf=SP` (omitido = todas), `--overwrite` (default só `lat IS NULL`), `--legacy-match`,
+`--max-rows` / `--max-seconds`, `--memory=4G`. Shards (`--shard*`) só no caminho legado OSM.
 
 ## Testes
 

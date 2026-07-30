@@ -42,10 +42,11 @@ set NODE_OPTIONS=--max-old-space-size=8192
 node dne-geo-join.js ^
   --dne=D:\dev\ddsoft\ddsoft-online\_ignore\Delimitado ^
   --osm=G:\osm-geo-se-streets2 ^
-  --out=G:\dne-geo --uf=SP
+  --out=G:\dne-geo-local --uf=SP
 ```
 
-Opções: `--cluster-cell=0.02`, `--footprint-cell=0.01`, `--max-extent-km=15`, `--quiet`.
+Opções: `--cluster-cell=0.02`, `--footprint-cell=0.01`, `--max-extent-km=15`,
+`--footprint-dilate=1`, `--envelope-tol-km=1`, `--sem-envelope`, `--sem-exclusao-cluster`, `--quiet`.
 SP inteiro leva ~47 s.
 
 ## Processo
@@ -260,11 +261,22 @@ porque é redundante com o crescimento do footprint na 2ª volta. O histórico c
 defeito de raio que quase mascarou isso, está em
 [amostras-ambiguo-sp.md](./amostras-ambiguo-sp.md#como-esta-amostra-derrubou-uma-feature).
 
-### Pista aberta
+### Fase 5c — envelope (buraco na pegada)
 
-**8 691 clusters (4,07 %) já são usados por linhas de mais de um município** no pipeline atual —
-linhas hoje marcadas como `ok`. Uma via física é de uma cidade só; no mínimo um lado está errado.
-Merece um passe de verificação.
+Depois da 2ª volta, linhas `fora_do_footprint` com **exatamente um** candidato de nome a
+≤ `--envelope-tol-km` (default 1) da mancha (centro − raio das âncoras) são aceitas. Isso cobre
+loteamento na borda e buracos de grade **sem** dilatar o footprint (halo metropolitano mistura
+cidades vizinhas — medido e descartado).
+
+Desligar: `--sem-envelope`.
+
+### Fase 5d — exclusão multi-município
+
+Cluster usado por 2+ `loc_nu` com `geo_status=ok` → um dono (maioria de linhas; empate = âncora
+municipal mais próxima do centroide). Perdedores → `ambiguo` / `conflito_municipio`, sem coordenada.
+Uma via física é de uma cidade só; falsos `ok` envenenam o produto mais que vazios.
+
+Desligar: `--sem-exclusao-cluster`. Relatório: `clusters_multi_municipio`, `revogados_conflito_municipio`.
 
 ### O que as amostras revelaram
 
@@ -354,8 +366,8 @@ resposta parece vir de uma geocodificação ingênua pelo nome.
 
 ### Conclusão: usar como fonte, nunca como verdade
 
-O erro deles é **detectável com o que já construímos**. A pegada municipal e a âncora local do §Fase
-5b rejeitam exatamente esse tipo de resposta. O desenho seria:
+O erro deles é **detectável com o que já construímos**. A pegada municipal (e o envelope da mancha)
+rejeitam exatamente esse tipo de resposta. O desenho seria:
 
 1. Consultar só as linhas `sem_nome_osm` / `ambiguo`, que já têm CEP.
 2. **Validar contra o footprint do município** (e contra a vizinhança do bairro, mais apertado).
@@ -380,18 +392,24 @@ O uso é gratuito para até 10 mil requisições mensais. Não há limite de req
 
 ### `DNE_GEO_RELATORIO_{UF}.json`
 
+Campos reais gerados pelo run (números de exemplo = SP 2026-07-30, antes de envelope/exclusão
+re-rodados; reprocessar para atualizar):
+
 ```json
 {
   "uf": "SP",
   "linhas_dne": 341813,
-  "localidades": { "total": 252, "com_footprint": 252, "ancoras_medianas": 320 },
-  "geo_status": { "ok": 288512, "ambiguo": 9877, "sem_nome_osm": 43424, "sem_extract": 0 },
-  "geo_regra": { "exato": 264500, "area": 6890, "name_alt": 3612, "addr": 330,
-                 "nucleo": 8210, "fonetico": 4970 },
-  "clusters": { "unico": 231004, "desempate_bairro": 41200, "desempate_tamanho": 16308 },
-  "alertas": [ "12 localidades com < 20 âncoras: 9701, 9744, …" ]
+  "localidades": { "total": 3138, "com_footprint": 252, "herdados_de_subordinacao": 1470, "ancoras": 126096 },
+  "geo_status": { "ok": 263478, "ambiguo": 22281, "sem_nome_osm": 56054 },
+  "geo_regra": { "exato": 242178, "fonetico": 7864, "nucleo": 6481, "name_alt": 4353, "area": 2469, "addr": 133 },
+  "ambiguo_por_motivo": { "fora_do_footprint": 22241, "extensao_longa": 37, "empate_de_tamanho": 3 },
+  "envelope_recuperados": 0,
+  "clusters_multi_municipio": 0,
+  "revogados_conflito_municipio": 0
 }
 ```
+
+`envelope_*` e `clusters_multi_*` passam a ser preenchidos após reprocessar com as fases 5c/5d.
 
 `DNE_GEO_BAIRRO_{UF}.TXT` sai de graça no mesmo passe: bbox por `bai_nu` pela união das vias
 resolvidas. Resolve o lado bairro sem depender do `OSM_BAIRRO.TXT` (que tem 2 696 linhas em `XX`).
@@ -433,5 +451,6 @@ o código.
 
 ## Depois
 
-O `DneOsmGeoEnricher` para de casar e passa a carregar por `log_nu` — ver
-[bairro-logradouro.md](./bairro-logradouro.md) §O que muda no ddsoft.
+O `DneOsmGeoEnricher` **já carrega** por `log_nu` / `bai_nu` quando `DNE_GEO_*` está na `--dir`
+(ddsoft `osm:dne:enrich-geo`). Próximo: dry-run → apply por UF no MySQL e coords na busca.
+Ver [bairro-logradouro.md](./bairro-logradouro.md) e [operacao-comandos.md](./operacao-comandos.md).
