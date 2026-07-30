@@ -10,3 +10,10 @@ test/fixtures/large200.osm.bz2
 
 # Stats dumps next to local OSM extracts
 *-stats.json
+
+# Saídas que a suite grava ao lado das fixtures: index0/index-pbf derivam o
+# caminho do input (foo.osm.bz2 → foo.osm-results.json). Regeneram a cada
+# rodada e só mudam statsPath (temp com PID) e elapsedMs — nada lê como golden.
+test/fixtures/*-results.json
+test/fixtures/*-results-bzip.json
+test/fixtures/*-pbf-results.json
