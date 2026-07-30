@@ -15,7 +15,7 @@ Modelo de arquivo: **igual espírito DNE** — texto UTF-8, delimitador **`@`**,
 | `estado` | `OSM_ESTADO.TXT` | `place=state` ou `boundary=administrative` + `admin_level=4` |
 | `municipio` | `OSM_MUNICIPIO.TXT` | `place=city\|municipality\|town` ou admin `admin_level=8`; IBGE só **7 dígitos** |
 | `bairro` | `OSM_BAIRRO.TXT` | `place=suburb\|neighbourhood\|quarter` (e afins) |
-| `logradouro` | `OSM_LOGRADOURO_{UF}.TXT` | `highway=*` **e** `name` (ou `name:pt`) |
+| `logradouro` | `OSM_LOGRADOURO_{UF}.TXT` | `name` (ou `name:pt`) **e** `highway=*` · `place=square` · `leisure=park\|garden` · `landuse=village_green` — way **ou** node |
 | `addr` / `--addr-points` | `OSM_ADDR_POINT_{UF}.TXT` | node com `addr:street` (opcional; **não** popular número global em massa) |
 
 Default de datasets: estado + município + bairro + logradouro (`addr` off).
@@ -24,10 +24,29 @@ Default de datasets: estado + município + bairro + logradouro (`addr` off).
 
 Espelho de `LOG_LOGRADOURO_{UF}.TXT` do DNE:
 
-- `OSM_LOGRADOURO_SP.TXT`, `_RJ`, `_MG`, `_ES`, …
+- Flat: `OSM_LOGRADOURO_SP.TXT`, `_RJ`, `_MG`, `_ES`, …
 - Residual **`XX`** se UF não resolvida (tags → IBGE → bbox do way vs retângulos SE)
+- **Fatiado** (`--shard-lines=N`):
+
+```text
+OSM_LOGRADOURO_SP/
+  100000-linhas/
+    000001.txt
+    000002.txt
+  MANIFEST.json
+```
 
 Atribuição de UF (ordem): tags (`ISO3166-2`, `addr:state`, …) → prefixo IBGE → ponto/bbox do way.
+
+### CLI shard
+
+```bash
+node extract-geocode-pbf.js G:\sudeste.osm.pbf --out=G:\out \
+  --datasets=logradouro --shard-lines=100000
+# --shard-datasets=logradouro,bairro,addr   (default se shard-lines>0: logradouro,addr,bairro)
+```
+
+Import PHP: `osm:dne:enrich-geo --uf=SP --shard=1` (ver ddsoft).
 
 ### Município: o que **não** emitir
 
@@ -48,7 +67,12 @@ Detalhe completo no `README-colunas.md` gerado na saída.
 `osm_type@osm_id@name@name_norm@uf@city@city_norm@ibge_hint@lat@lng@…@place`
 
 **Logradouro:**  
-`osm_id@name@name_norm@highway@uf@city@city_norm@suburb@suburb_norm@postcode@lat@lng@…@way_node_count`
+`osm_id@name@name_norm@kind@uf@city@city_norm@suburb@suburb_norm@postcode@lat@lng@…@way_node_count@name_alt@name_alt_norm@osm_type`
+
+- `kind` (era `highway`): valor de `highway`, ou `square` / `park` para área.
+- `name_alt` / `name_alt_norm`: `alt_name`, `short_name`, `old_name`, `loc_name`, `name:pt-BR`, `official_name`, separados por `;`.
+- `osm_type`: `way` ou `node` (praça mapeada como ponto → bbox degenerada).
+- **Match kind-aware:** candidato `square`/`park` só vale para `TLO_TX` de área (Praça, Largo, Parque, Jardim, Vila, Área). Ver `docs/geo/melhoria-extracao-coordenadas.md` §10.3.
 
 Campos com `@` ou newline no nome são sanitizados (substituídos).
 

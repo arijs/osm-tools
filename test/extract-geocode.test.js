@@ -8,6 +8,8 @@ var { execFileSync } = require('child_process');
 var {
 	runExtractGeocode,
 	parseDatasets,
+	logradouroKind,
+	altNames,
 	nameNorm
 } = require('../extract-geocode-pbf');
 var txtAt = require('../txt-at-writer');
@@ -56,6 +58,37 @@ test('formatRow usa delimitador @', function () {
 	assert.equal(txtAt.formatRow(['x@y', 'z']), 'x y@z\n');
 });
 
+test('logradouroKind aceita área além de highway', function () {
+	assert.equal(logradouroKind({ highway: 'residential' }), 'residential');
+	assert.equal(logradouroKind({ place: 'square' }), 'square');
+	assert.equal(logradouroKind({ leisure: 'park' }), 'park');
+	assert.equal(logradouroKind({ leisure: 'garden' }), 'park');
+	assert.equal(logradouroKind({ landuse: 'village_green' }), 'park');
+	// highway ganha quando os dois existem (praça com via de pedestre desenhada)
+	assert.equal(logradouroKind({ highway: 'pedestrian', place: 'square' }), 'pedestrian');
+	// nada disso não é logradouro
+	assert.equal(logradouroKind({ landuse: 'residential', name: 'Jardim X' }), '');
+	assert.equal(logradouroKind({ building: 'yes' }), '');
+	assert.equal(logradouroKind(null), '');
+});
+
+test('altNames coleta variantes sem repetir o nome principal', function () {
+	assert.deepEqual(
+		altNames({ name: 'Rua Augusta', alt_name: 'Rua Augusta Velha' }, 'Rua Augusta'),
+		['Rua Augusta Velha']
+	);
+	// multi-valor do OSM separado por ; e sem duplicata entre tags
+	assert.deepEqual(
+		altNames(
+			{ alt_name: 'A;B', old_name: 'B', short_name: 'C' },
+			'Rua X'
+		),
+		['A', 'B', 'C']
+	);
+	assert.deepEqual(altNames({ name: 'Só o nome' }, 'Só o nome'), []);
+	assert.deepEqual(altNames(null, ''), []);
+});
+
 test('runExtractGeocode emite TXT por nível e logradouro por UF', async function () {
 	ensureGeocodePbf();
 	rmrf(outDir);
@@ -100,11 +133,46 @@ test('runExtractGeocode emite TXT por nível e logradouro por UF', async functio
 
 	var logs = readTxt('OSM_LOGRADOURO_SP.TXT');
 	assert.ok(logs.length >= 1, 'logradouro segmentado em SP (two-pass)');
-	assert.equal(logs[0][1], 'Rua Augusta');
-	assert.equal(logs[0][3], 'residential');
+	var byName = {};
+	logs.forEach(function (row) {
+		byName[row[1]] = row;
+	});
+
+	var augusta = byName['Rua Augusta'];
+	assert.ok(augusta, 'Rua Augusta');
+	assert.equal(augusta[3], 'residential');
 	// centroid should resolve both nodes via pass 2
-	assert.ok(logs[0][10] !== '', 'lat do logradouro');
-	assert.equal(logs[0][16], '2');
+	assert.ok(augusta[10] !== '', 'lat do logradouro');
+	assert.equal(augusta[16], '2');
+	assert.equal(augusta[17], 'Rua Augusta Velha', 'name_alt');
+	assert.equal(augusta[18], nameNorm('Rua Augusta Velha'), 'name_alt_norm');
+	assert.equal(augusta[19], 'way', 'osm_type');
+
+	// praça como way fechada: kind=square, bbox real (não degenerada)
+	var praca = byName['Praça da Sé'];
+	assert.ok(praca, 'praça extraída (place=square)');
+	assert.equal(praca[3], 'square');
+	assert.equal(praca[19], 'way');
+	assert.ok(Number(praca[13]) > Number(praca[12]), 'bbox de área tem altura');
+
+	// parque como área
+	var parque = byName['Parque do Ibirapuera'];
+	assert.ok(parque, 'parque extraído (leisure=park)');
+	assert.equal(parque[3], 'park');
+
+	// praça como nó: ponto exato, bbox degenerada, osm_type=node
+	var pracaNo = byName['Praça do Correio'];
+	assert.ok(pracaNo, 'praça extraída (node place=square)');
+	assert.equal(pracaNo[3], 'square');
+	assert.equal(pracaNo[19], 'node');
+	assert.equal(pracaNo[12], pracaNo[13], 'nó não tem extensão');
+	assert.equal(pracaNo[16], '1');
+
+	// highway ganha de place quando os dois existem
+	assert.equal(byName['Largo Teste'][3], 'pedestrian');
+
+	// landuse nomeado NÃO é logradouro
+	assert.equal(byName['Jardim Teste'], undefined, 'landuse=residential fora');
 	assert.ok(result.counts.logradouroNoGeom === 0, 'two-pass deve resolver geom');
 	// não deve cair em XX se o ponto está em SP
 	assert.ok(!fs.existsSync(path.join(outDir, 'OSM_LOGRADOURO_XX.TXT')) ||

@@ -8,6 +8,8 @@
  *   --datasets=estado,municipio,bairro,logradouro[,addr]
  *   --resume / --no-resume
  *   --node-cache=N   (default 500000)
+ *   --shard-lines=N  (0=flat .TXT; N>0 → OSM_KEY/{N}-linhas/000001.txt + MANIFEST)
+ *   --shard-datasets=logradouro,addr  (default when shard-lines>0)
  *
  * Soft-stop: Ctrl+C (finish current blob); 2nd hard-stop.
  */
@@ -200,6 +202,57 @@ function displayName(tags) {
 	return tags['name:pt'] || tags.name || tags['official_name'] || '';
 }
 
+var NAME_ALT_TAGS = [
+	'alt_name',
+	'short_name',
+	'old_name',
+	'loc_name',
+	'name:pt-BR',
+	'official_name'
+];
+
+/**
+ * Denominações alternativas do OSM (equivalente ao LOG_VAR_LOG do DNE).
+ * Multi-valor separado por `;` — mesma convenção do próprio OSM.
+ */
+function altNames(tags, primary) {
+	if (!tags) return [];
+	var seen = Object.create(null);
+	if (primary) seen[primary] = 1;
+	var out = [];
+	for (var i = 0; i < NAME_ALT_TAGS.length; i++) {
+		var raw = tags[NAME_ALT_TAGS[i]];
+		if (!raw) continue;
+		var parts = String(raw).split(';');
+		for (var j = 0; j < parts.length; j++) {
+			var v = parts[j].trim();
+			if (!v || seen[v]) continue;
+			seen[v] = 1;
+			out.push(v);
+		}
+	}
+	return out;
+}
+
+/**
+ * Shape que o DNE trata como logradouro. Rua/avenida é `highway`; praça, largo
+ * e parque não são — são área (`place=square`, `leisure=park`) e por isso nunca
+ * entravam. Medido: `Praça` casava 35,9% contra 86,3% de `Rua` (docs/geo/
+ * melhoria-extracao-coordenadas.md §10.1).
+ *
+ * ponytail: só way (fechada ou não) e node. Relation multipolygon fica de fora —
+ * custaria um 3º passe e vale ~25 linhas de "Parque" na capital. Se doer:
+ * resolver members da relation no mesmo two-pass dos streets.
+ */
+function logradouroKind(tags) {
+	if (!tags) return '';
+	if (tags.highway) return tags.highway;
+	if (tags.place === 'square') return 'square';
+	if (tags.leisure === 'park' || tags.leisure === 'garden') return 'park';
+	if (tags.landuse === 'village_green') return 'park';
+	return '';
+}
+
 function wantDataset(set, name) {
 	return set[name] === true;
 }
@@ -314,6 +367,12 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 		ctx.stats.bairro++;
 	}
 
+	// Praça mapeada como nó: ponto exato, sem extensão (bbox degenerada).
+	// É coordenada real — não confundir com centroide de fallback.
+	if (wantDataset(ctx.datasets, 'logradouro') && tags.place === 'square' && name) {
+		writeLogradouroRow(ctx, 'node', id, tags, name, nn, g, ibgeInfo);
+	}
+
 	if (wantDataset(ctx.datasets, 'addr') && tags['addr:street']) {
 		var street = tags['addr:street'];
 		var ufA = ufBr.resolveUf({ tags: tags, lat: lat, lng: lon });
@@ -345,7 +404,7 @@ function processFeatureWay(ctx, way) {
 	var ibgeInfo = ufBr.extractIbge(tags);
 	var nn = nameNorm(name);
 
-	if (wantDataset(ctx.datasets, 'logradouro') && tags.highway && name) {
+	if (wantDataset(ctx.datasets, 'logradouro') && logradouroKind(tags) && name) {
 		if (ctx.twoPassStreets) {
 			// Pass 1: só agenda; coords resolvidas na pass 2
 			for (var ri = 0; ri < nodeIds.length; ri++) {
@@ -360,7 +419,7 @@ function processFeatureWay(ctx, way) {
 			});
 			ctx.stats.logradouroPending++;
 		} else {
-			writeLogradouroRow(ctx, way.id, tags, name, nn, g, ibgeInfo);
+			writeLogradouroRow(ctx, 'way', way.id, tags, name, nn, g, ibgeInfo);
 		}
 	}
 
@@ -459,7 +518,7 @@ function municipioIbgeOnly(raw) {
 	return d.length === 7 ? d : '';
 }
 
-function writeLogradouroRow(ctx, wayId, tags, name, nn, g, ibgeInfo) {
+function writeLogradouroRow(ctx, osmType, wayId, tags, name, nn, g, ibgeInfo) {
 	var uf = ufBr.resolveUf({
 		tags: tags,
 		lat: g.lat === '' ? null : g.lat,
@@ -471,11 +530,12 @@ function writeLogradouroRow(ctx, wayId, tags, name, nn, g, ibgeInfo) {
 		ibge: ibgeInfo && ibgeInfo.ibge
 	});
 	var base = 'OSM_LOGRADOURO_' + (uf || 'XX');
+	var alts = altNames(tags, name);
 	ctx.writer.write(base, [
 		wayId,
 		name,
 		nn,
-		tags.highway,
+		logradouroKind(tags),
 		uf === 'XX' ? '' : uf,
 		tags['addr:city'] || '',
 		nameNorm(tags['addr:city'] || ''),
@@ -488,7 +548,10 @@ function writeLogradouroRow(ctx, wayId, tags, name, nn, g, ibgeInfo) {
 		g.lat_max,
 		g.lng_min,
 		g.lng_max,
-		g.way_node_count
+		g.way_node_count,
+		alts.join(';'),
+		alts.map(nameNorm).join(';'),
+		osmType
 	]);
 	ctx.stats.logradouro++;
 	if (g.nodes_resolved === 0) ctx.stats.logradouroNoGeom++;
@@ -507,7 +570,7 @@ function emitPendingStreets(ctx) {
 		var w = ctx.pendingStreets[i];
 		var g = geomFromNodeIds(w.nodeIds, streetCache);
 		var ibgeInfo = ufBr.extractIbge(w.tags);
-		writeLogradouroRow(ctx, w.id, w.tags, w.name, w.nn, g, ibgeInfo);
+		writeLogradouroRow(ctx, 'way', w.id, w.tags, w.name, w.nn, g, ibgeInfo);
 	}
 	ctx.pendingStreets = [];
 }
@@ -818,23 +881,47 @@ function parseDatasets(str) {
 	return out;
 }
 
-function writeReadmeColunas(outDir) {
+function writeReadmeColunas(outDir, opts) {
+	opts = opts || {};
+	var shardLines = opts.shardLines || 0;
+	var shardNote =
+		shardLines > 0
+			? '\n## Modo fatiado (`--shard-lines=' +
+				shardLines +
+				'`)\n\n' +
+				'Datasets grandes (logradouro, bairro, addr) gravam:\n\n' +
+				'```\nKEY/\n  ' +
+				shardLines +
+				'-linhas/\n    000001.txt\n    000002.txt\n  MANIFEST.json\n```\n\n' +
+				'Cada `.txt` tem no máximo N linhas (última fatia pode ter menos). ' +
+				'Colunas iguais ao monólito. Import: processar fatia a fatia via MANIFEST.\n\n' +
+				'Monólito flat: `KEY.TXT` na raiz de `out/` quando `--shard-lines=0`.\n\n'
+			: '\n## Modo flat (default)\n\nUm arquivo `KEY.TXT` por dataset na raiz de `out/`.\n\n';
 	var md =
 		'# OSM geo extract — contrato de colunas (delimitador `@`)\n\n' +
 		'Encoding: UTF-8. Sem header. Campos vazios = string vazia.\n' +
-		'Campos com `@` ou quebras de linha são sanitizados no extract.\n\n' +
+		'Campos com `@` ou quebras de linha são sanitizados no extract.\n' +
+		shardNote +
 		'## OSM_ESTADO.TXT\n\n' +
 		'`osm_type@osm_id@uf@name@name_norm@lat@lng@lat_min@lat_max@lng_min@lng_max@admin_level@place`\n\n' +
 		'## OSM_MUNICIPIO.TXT\n\n' +
 		'`osm_type@osm_id@ibge@uf@name@name_norm@lat@lng@lat_min@lat_max@lng_min@lng_max@admin_level@place@source_tag`\n\n' +
-		'## OSM_BAIRRO.TXT\n\n' +
+		'## OSM_BAIRRO\n\n' +
 		'`osm_type@osm_id@name@name_norm@uf@city@city_norm@ibge_hint@lat@lng@lat_min@lat_max@lng_min@lng_max@place`\n\n' +
-		'## OSM_LOGRADOURO_{UF}.TXT\n\n' +
-		'Um arquivo por UF (`SP`, `RJ`, `MG`, `ES`, …) + residual `XX`.\n\n' +
-		'`osm_id@name@name_norm@highway@uf@city@city_norm@suburb@suburb_norm@postcode@lat@lng@lat_min@lat_max@lng_min@lng_max@way_node_count`\n\n' +
-		'## OSM_ADDR_POINT_{UF}.TXT (opcional)\n\n' +
+		'## OSM_LOGRADOURO_{UF}\n\n' +
+		'Um dataset por UF (`SP`, `RJ`, `MG`, `ES`, …) + residual `XX`.\n\n' +
+		'`osm_id@name@name_norm@kind@uf@city@city_norm@suburb@suburb_norm@postcode@lat@lng@lat_min@lat_max@lng_min@lng_max@way_node_count@name_alt@name_alt_norm@osm_type`\n\n' +
+		'- `kind`: valor de `highway` (`residential`, `primary`, …) ou, para área, ' +
+		'`square` (`place=square`) / `park` (`leisure=park|garden`, `landuse=village_green`).\n' +
+		'- `name_alt` / `name_alt_norm`: `alt_name`, `short_name`, `old_name`, `loc_name`, ' +
+		'`name:pt-BR`, `official_name` — multi-valor separado por `;`.\n' +
+		'- `osm_type`: `way` ou `node` (praça mapeada como ponto: bbox degenerada).\n\n' +
+		'**Match kind-aware:** candidato `square`/`park` só vale para linha DNE com ' +
+		'`TLO_TX` de área (Praça, Largo, Parque, Jardim, Vila, Área). Sem essa guarda, ' +
+		'`Parque Villa-Lobos` casa com `Rua Villa-Lobos`.\n\n' +
+		'## OSM_ADDR_POINT_{UF} (opcional)\n\n' +
 		'`osm_id@lat@lng@street@street_norm@housenumber@city@suburb@postcode@name`\n\n' +
-		'Plano: `docs/plans/osm-para-locais-geo.md`\n';
+		'Docs: `docs/geo/extract-e-artefatos.md`\n';
 	fs.writeFileSync(path.join(outDir, 'README-colunas.md'), md, 'utf8');
 }
 
@@ -871,6 +958,12 @@ function runExtractGeocode(options) {
 		options.twoPassGeometry !== false &&
 		(wantDataset(datasets, 'logradouro') || wantDataset(datasets, 'municipio'));
 	var twoPassStreets = twoPassGeometry && wantDataset(datasets, 'logradouro');
+	var shardLines = options.shardLines > 0 ? (options.shardLines | 0) : 0;
+	var shardOnly = options.shardOnly || null;
+	if (shardLines > 0 && (!shardOnly || !shardOnly.length)) {
+		// default: fatia só volumes grandes
+		shardOnly = ['OSM_LOGRADOURO', 'OSM_ADDR_POINT', 'OSM_BAIRRO'];
+	}
 	var statsPath = path.join(outDir, 'extract-checkpoint.json');
 
 	return new Promise(function (resolve, reject) {
@@ -928,15 +1021,7 @@ function runExtractGeocode(options) {
 
 		fs.mkdirSync(outDir, { recursive: true });
 		if (!resume) {
-			// wipe previous TXT in outDir that we own
-			try {
-				var existing = fs.readdirSync(outDir);
-				for (var ei = 0; ei < existing.length; ei++) {
-					if (/^OSM_.*\.TXT$/i.test(existing[ei])) {
-						fs.unlinkSync(path.join(outDir, existing[ei]));
-					}
-				}
-			} catch (_) {}
+			txtAt.wipeOsmOutputs(outDir);
 		}
 
 		var startOffset = 0;
@@ -957,8 +1042,15 @@ function runExtractGeocode(options) {
 			}
 		}
 
-		var writer = txtAt.createTxtAtWriter(outDir, { append: resume && startOffset > 0 });
-		writeReadmeColunas(outDir);
+		// append + shard is awkward (would need to reopen last partial shard);
+		// force write mode when sharded.
+		var writer = txtAt.createTxtAtWriter(outDir, {
+			append: resume && startOffset > 0 && shardLines <= 0,
+			shardLines: shardLines,
+			shardOnly: shardOnly,
+			sourcePbf: inputPath
+		});
+		writeReadmeColunas(outDir, { shardLines: shardLines });
 
 		var ctx = {
 			writer: writer,
@@ -1011,6 +1103,15 @@ function runExtractGeocode(options) {
 			if (twoPassGeometry) {
 				console.error(
 					'Two-pass geometry: pass1 agenda (logradouro + admin_centre), pass2 resolve nós'
+				);
+			}
+			if (shardLines > 0) {
+				console.error(
+					'Shard: ' +
+						shardLines +
+						' linhas/arquivo → KEY/' +
+						shardLines +
+						'-linhas/000001.txt'
 				);
 			}
 			console.error('');
@@ -1194,7 +1295,9 @@ function runExtractGeocode(options) {
 					counts: ctx.stats,
 					datasets: datasets,
 					twoPassStreets: twoPassStreets,
+					shardLines: shardLines,
 					writerCounts: writer.counts,
+					shards: typeof writer.getShardSnapshot === 'function' ? writer.getShardSnapshot() : {},
 					inputPath: inputPath,
 					outDir: outDir,
 					stoppedEarly: stoppedEarly,
@@ -1233,7 +1336,9 @@ function parseCli(argv) {
 		datasets: null,
 		resume: false,
 		quiet: false,
-		nodeCacheMax: DEFAULT_NODE_CACHE
+		nodeCacheMax: DEFAULT_NODE_CACHE,
+		shardLines: 0,
+		shardOnly: null
 	};
 	for (var i = 0; i < args.length; i++) {
 		var a = args[i];
@@ -1246,7 +1351,25 @@ function parseCli(argv) {
 		else if (a === '--datasets') opts.datasets = parseDatasets(args[++i]);
 		else if (a.indexOf('--node-cache=') === 0)
 			opts.nodeCacheMax = parseInt(a.slice(13), 10) || DEFAULT_NODE_CACHE;
-		else if (a === '--addr-points') {
+		else if (a.indexOf('--shard-lines=') === 0)
+			opts.shardLines = parseInt(a.slice(14), 10) || 0;
+		else if (a === '--shard-lines') opts.shardLines = parseInt(args[++i], 10) || 0;
+		else if (a.indexOf('--shard-datasets=') === 0) {
+			opts.shardOnly = a
+				.slice(17)
+				.split(/[,+\s]+/)
+				.filter(Boolean)
+				.map(function (s) {
+					s = s.trim();
+					if (s.toLowerCase() === 'logradouro') return 'OSM_LOGRADOURO';
+					if (s.toLowerCase() === 'bairro') return 'OSM_BAIRRO';
+					if (s.toLowerCase() === 'addr' || s.toLowerCase() === 'addr_point')
+						return 'OSM_ADDR_POINT';
+					if (s.toLowerCase() === 'municipio') return 'OSM_MUNICIPIO';
+					if (s.toLowerCase() === 'estado') return 'OSM_ESTADO';
+					return s;
+				});
+		} else if (a === '--addr-points') {
 			opts.datasets = opts.datasets || parseDatasets('all');
 			opts.datasets.addr = true;
 		} else if (a.indexOf('-') === 0) {
@@ -1288,6 +1411,8 @@ function main() {
 		resume: opts.resume,
 		quiet: opts.quiet,
 		nodeCacheMax: opts.nodeCacheMax,
+		shardLines: opts.shardLines,
+		shardOnly: opts.shardOnly,
 		onControl: function (c) {
 			control = c;
 		}
@@ -1313,6 +1438,8 @@ module.exports = {
 	geomFromNodeIds: geomFromNodeIds,
 	decodeWayRefs: decodeWayRefs,
 	createNodeCache: createNodeCache,
+	logradouroKind: logradouroKind,
+	altNames: altNames,
 	nameNorm: nameNorm
 };
 

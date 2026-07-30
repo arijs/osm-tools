@@ -4,8 +4,11 @@
  * Minimal OSM PBF with geocode material for extract tests:
  * - place=city node with IBGE (São Paulo)
  * - place=suburb node
- * - highway way with name spanning cached nodes
+ * - highway way with name spanning cached nodes (+ alt_name)
  * - place=state node
+ * - place=square way (praça, área fechada) e place=square node
+ * - leisure=park way; landuse=residential nomeado (negativo: não é logradouro)
+ * - highway+place na mesma way (highway ganha)
  *
  * Usage: node scripts/write-geocode-pbf.js [out.pbf]
  */
@@ -80,28 +83,43 @@ function buildGeocodePbf() {
 		Buffer.from('addr:street'),
 		Buffer.from('Av Paulista'),
 		Buffer.from('addr:housenumber'),
-		Buffer.from('1000')
+		Buffer.from('1000'),
+		// 20 square 21 Praça da Sé 22 leisure 23 park 24 Parque do Ibirapuera
+		// 25 alt_name 26 Rua Augusta Velha 27 Praça do Correio
+		// 28 landuse 29 Jardim Teste 30 pedestrian 31 Largo Teste
+		Buffer.from('square'),
+		Buffer.from('Praça da Sé'),
+		Buffer.from('leisure'),
+		Buffer.from('park'),
+		Buffer.from('Parque do Ibirapuera'),
+		Buffer.from('alt_name'),
+		Buffer.from('Rua Augusta Velha'),
+		Buffer.from('Praça do Correio'),
+		Buffer.from('landuse'),
+		Buffer.from('Jardim Teste'),
+		Buffer.from('pedestrian'),
+		Buffer.from('Largo Teste')
 	];
 
 	// Dense nodes (delta):
 	// 1001 city SP, 1002 suburb, 1003 street node A, 1004 street node B, 1005 state, 1006 addr point
-	var ids = [1001, 1, 1, 1, 1, 1];
-	var lats = [
-		toInt(-23.55),
-		toInt(-23.551) - toInt(-23.55),
-		toInt(-23.552) - toInt(-23.551),
-		toInt(-23.553) - toInt(-23.552),
-		toInt(-22.0) - toInt(-23.553),
-		toInt(-23.561) - toInt(-22.0)
+	// 1007/1008 cantos da praça (way fechada), 1009/1010 cantos do parque,
+	// 1011 praça mapeada como nó
+	var nodeLat = [
+		-23.55, -23.551, -23.552, -23.553, -22.0, -23.561,
+		-23.5505, -23.551, -23.5875, -23.588, -23.545
 	];
-	var lons = [
-		toInt(-46.63),
-		toInt(-46.631) - toInt(-46.63),
-		toInt(-46.632) - toInt(-46.631),
-		toInt(-46.633) - toInt(-46.632),
-		toInt(-48.0) - toInt(-46.633),
-		toInt(-46.65) - toInt(-48.0)
+	var nodeLon = [
+		-46.63, -46.631, -46.632, -46.633, -48.0, -46.65,
+		-46.634, -46.6335, -46.658, -46.657, -46.636
 	];
+	var ids = [1001, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+	var lats = nodeLat.map(function (v, i) {
+		return i === 0 ? toInt(v) : toInt(v) - toInt(nodeLat[i - 1]);
+	});
+	var lons = nodeLon.map(function (v, i) {
+		return i === 0 ? toInt(v) : toInt(v) - toInt(nodeLon[i - 1]);
+	});
 	// keys_vals per node terminated by 0
 	var keys_vals = [
 		// 1001 city + name + ibge
@@ -115,7 +133,14 @@ function buildGeocodePbf() {
 		// 1005 state + name + ISO
 		1, 12, 3, 13, 14, 15, 0,
 		// 1006 addr
-		16, 17, 18, 19, 0
+		16, 17, 18, 19, 0,
+		// 1007..1010 bare (geometria de área)
+		0,
+		0,
+		0,
+		0,
+		// 1011 place=square + name
+		1, 20, 3, 27, 0
 	];
 
 	var pb = {
@@ -133,10 +158,38 @@ function buildGeocodePbf() {
 				ways: [
 					{
 						id: 2001,
-						keys: [9, 3], // highway, name
-						vals: [10, 11], // residential, Rua Augusta
+						keys: [9, 3, 25], // highway, name, alt_name
+						vals: [10, 11, 26], // residential, Rua Augusta, Rua Augusta Velha
 						info: null,
 						refs: [1003, 1] // 1003, 1004
+					},
+					{
+						id: 2002,
+						keys: [1, 3], // place, name
+						vals: [20, 21], // square, Praça da Sé
+						info: null,
+						refs: [1007, 1, -1] // 1007, 1008, 1007 (fechada)
+					},
+					{
+						id: 2003,
+						keys: [22, 3], // leisure, name
+						vals: [23, 24], // park, Parque do Ibirapuera
+						info: null,
+						refs: [1009, 1] // 1009, 1010
+					},
+					{
+						id: 2004,
+						keys: [28, 3], // landuse, name — NÃO é logradouro
+						vals: [10, 29], // residential, Jardim Teste
+						info: null,
+						refs: [1009, 1]
+					},
+					{
+						id: 2005,
+						keys: [9, 1, 3], // highway + place + name → highway ganha
+						vals: [30, 20, 31], // pedestrian, square, Largo Teste
+						info: null,
+						refs: [1007, 1]
 					}
 				],
 				relations: [],
