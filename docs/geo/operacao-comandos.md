@@ -55,6 +55,26 @@ php bin/console osm:locais:enrich-geo --dir=G:\osm-geo-se --dataset=municipio
 php bin/console osm:locais:enrich-geo --dir=G:\osm-geo-se --overwrite   # sobrescreve lat existente
 ```
 
+## Cache CEP externo (AwesomeAPI)
+
+```bash
+cd D:\dev\github\osm-tools
+# importa amostra JSONL antiga (se houver)
+node scripts/cep-externo-from-jsonl.mjs --in=_ignore/awesomeapi-sample/results.jsonl --out=G:\dne-geo-local\CEP_EXTERNO.TXT
+
+# consulta só CEPs ainda não cacheados (chave em .env.local)
+node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-local --cache=G:\dne-geo-local\CEP_EXTERNO.TXT --n=1000
+```
+
+Spec: [cep-externo.md](./cep-externo.md). Reexecução **não** reconsulta CEP já presente no TXT.
+
+Após cada lote, grava relatório de qualidade em `G:\dne-geo-local\qualidade\` (e espelho em
+`docs/geo/cep-externo-qualidade/`). Para reprocessar buckets já no cache:
+
+```bash
+node scripts/cep-externo-quality.mjs --cache=G:\dne-geo-local\CEP_EXTERNO.TXT --dne=G:\dne-geo-local
+```
+
 ## Join OSM ↔ DNE (osm-tools)
 
 ```bash

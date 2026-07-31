@@ -10,6 +10,8 @@ Documentação operacional e de desenho do caminho **OpenStreetMap (PBF) → arq
 | [**bairro-logradouro.md**](./bairro-logradouro.md) | Extract + join feitos; **load PHP** de `DNE_GEO_*` por `log_nu` |
 | [**melhoria-extracao-coordenadas.md**](./melhoria-extracao-coordenadas.md) | **Diagnóstico medido** do cruzamento OSM↔DNE: por que falhava, o que foi medido |
 | [**dne-geo-join.md**](./dne-geo-join.md) | **Especificação** do `dne-geo-join.js`: processo, contrato, envelope, multi-mun |
+| [**cep-externo.md**](./cep-externo.md) | Cache `CEP_EXTERNO.TXT` (AwesomeAPI): formato `@`, dedupe por CEP |
+| [**cep-externo-qualidade/**](./cep-externo-qualidade/README.md) | Relatórios de qualidade por bucket de consulta |
 | [**operacao-comandos.md**](./operacao-comandos.md) | Receitas de CLI (copiar e colar) |
 
 Plano original (histórico): [../plans/osm-para-locais-geo.md](../plans/osm-para-locais-geo.md).  
