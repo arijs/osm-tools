@@ -97,7 +97,7 @@ Para cada linha do DNE, candidatos = clusters cujo nome bate **e** que caem no f
 | `area` | idem, candidato `kind` ∈ {`square`,`park`}, só para `TLO_TX` de área | +2,1 pp |
 | `name_alt` | bate em `name_alt_norm` | +1,1 pp |
 | `addr` | bate em `addr:street` de `OSM_ADDR_POINT` | +0,1 pp |
-| `nucleo` | núcleo sem tipo de logradouro (DNE `Travessa Goiás` ↔ OSM `Rua Goiás`) | +2,5 pp |
+| `nucleo` | núcleo sem tipo de logradouro (DNE `Travessa Goiás` ↔ OSM `Rua Goiás`; TLO composto `Estrada Municipal X` → `X`) | +2,5 pp |
 | `fonetico` | chave fonética PT-BR (`z→s`, `y→i`, `ph→f`, `h` mudo, dobradas colapsadas) | +1,7 pp |
 | `titulo` | núcleo sem títulos/honrarias (`Doutor`, `Dr`, `Prof`, …) — DNE costuma omitir, OSM grava | a medir em re-join |
 | `titulo_fonetico` | `titulo` + chave fonética | a medir |

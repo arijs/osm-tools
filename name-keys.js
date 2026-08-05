@@ -20,6 +20,16 @@ var TIPOS = {
 	residencial: 1, quadra: 1, conjunto: 1, boulevard: 1, retorno: 1, alca: 1
 };
 
+/**
+ * Qualificadores do tipo composto no DNE (TLO_TX multi-palavra).
+ * Só saem depois de um TIPOS — "estrada municipal X" → "X";
+ * "municipal X" sozinho (sem tipo antes) permanece (nome, não tipo).
+ * Ex.: TLO "Estrada Municipal" + LOG_NO "Professora …".
+ */
+var TIPO_MOD = {
+	municipal: 1, estadual: 1, federal: 1, vicinal: 1
+};
+
 /** Conectores que sobram na frente depois de tirar o tipo ("da moenda"). */
 var LIGA = { de: 1, da: 1, do: 1, das: 1, dos: 1, e: 1, a: 1, o: 1, em: 1, no: 1, na: 1 };
 
@@ -57,15 +67,32 @@ var TLO_AREA = {
 var KIND_AREA = { square: 1, park: 1 };
 
 /**
- * Núcleo do nome: tira o tipo de logradouro e conectores da frente.
- * "travessa da moenda" → "moenda"; casa com "rua da moenda" do OSM.
+ * Núcleo do nome: tira o tipo de logradouro, qualificadores do tipo e conectores
+ * da frente. "travessa da moenda" → "moenda"; "estrada municipal X" → "X".
  * Nunca devolve vazio — nome que é só tipo ("travessa") volta inteiro.
  */
 function coreName(norm) {
 	if (!norm) return '';
 	var t = norm.split(' ');
 	var i = 0;
-	while (i < t.length - 1 && (TIPOS[t[i]] === 1 || LIGA[t[i]] === 1)) i++;
+	var sawTipo = false;
+	while (i < t.length - 1) {
+		if (TIPOS[t[i]] === 1) {
+			sawTipo = true;
+			i++;
+			continue;
+		}
+		if (LIGA[t[i]] === 1) {
+			i++;
+			continue;
+		}
+		// "municipal"/"estadual"/… só após um tipo real (TLO composto)
+		if (sawTipo && TIPO_MOD[t[i]] === 1) {
+			i++;
+			continue;
+		}
+		break;
+	}
 	return t.slice(i).join(' ');
 }
 
@@ -144,6 +171,7 @@ module.exports = {
 	isAreaTlo: isAreaTlo,
 	isAreaKind: isAreaKind,
 	TIPOS: TIPOS,
+	TIPO_MOD: TIPO_MOD,
 	TITULOS: TITULOS,
 	TLO_AREA: TLO_AREA,
 	KIND_AREA: KIND_AREA

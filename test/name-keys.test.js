@@ -22,6 +22,26 @@ test('coreName casa DNE Travessa com OSM Rua', function () {
 	assert.equal(coreName('travessa santo antonio do monte'), coreName('rua santo antonio do monte'));
 });
 
+test('coreName tira qualificadores de TLO composto (Estrada Municipal)', function () {
+	assert.equal(
+		coreName('estrada municipal professora therezinha de lima belloto'),
+		'professora therezinha de lima belloto'
+	);
+	assert.equal(
+		coreName('estrada municipal marcelo eugenio tofanin'),
+		'marcelo eugenio tofanin'
+	);
+	assert.equal(coreName('rodovia estadual joao monlevade'), 'joao monlevade');
+	assert.equal(coreName('estrada vicinal do engordo'), 'engordo');
+	// sem tipo antes, "municipal" não é stripado (não é TLO sozinho)
+	assert.equal(coreName('municipal xyz'), 'municipal xyz');
+	// casa DNE TLO composto com OSM que omite "Municipal"
+	assert.equal(
+		coreName('estrada municipal professora therezinha de lima belloto'),
+		coreName('estrada professora therezinha de lima belloto')
+	);
+});
+
 test('stripTitulos remove Doutor/Prof no início do núcleo', function () {
 	var a = stripTitulos('doutor olimpio carr ribeiro');
 	assert.equal(a.bare, 'olimpio carr ribeiro');
@@ -57,6 +77,11 @@ test('coreBare casa DNE sem título com OSM com Doutor', function () {
 	assert.equal(coreBare('rua mario doutor silva'), 'mario doutor silva');
 	// nobreza não é stripada (identidade do logradouro)
 	assert.equal(coreBare('rua barao de piracicaba'), 'barao de piracicaba');
+	// TLO "Estrada Municipal" + Professora: tira tipo composto e o título
+	assert.equal(
+		coreBare('estrada municipal professora therezinha de lima belloto'),
+		'therezinha de lima belloto'
+	);
 });
 
 test('phoneticKey colapsa as variações reais DNE x OSM', function () {
