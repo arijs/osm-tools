@@ -49,7 +49,9 @@ node dne-geo-join.js ^
 ```
 
 Opções: `--cluster-cell=0.02`, `--footprint-cell=0.01`, `--max-extent-km=15`,
-`--footprint-dilate=1`, `--envelope-tol-km=1`, `--sem-envelope`, `--sem-exclusao-cluster`, `--quiet`.
+`--footprint-dilate=1`, `--envelope-tol-km=1`, `--sem-envelope`,
+`--vizinho-cep5-tol-km=1`, `--vizinho-cep5-min=3`, `--sem-vizinho-cep5`,
+`--sem-exclusao-cluster`, `--quiet`.
 SP inteiro leva ~47 s.
 
 ## Processo
@@ -99,7 +101,8 @@ Para cada linha do DNE, candidatos = clusters cujo nome bate **e** que caem no f
 | `fonetico` | chave fonética PT-BR (`z→s`, `y→i`, `ph→f`, `h` mudo, dobradas colapsadas) | +1,7 pp |
 | `titulo` | núcleo sem títulos/honrarias (`Doutor`, `Dr`, `Prof`, …) — DNE costuma omitir, OSM grava | a medir em re-join |
 | `titulo_fonetico` | `titulo` + chave fonética | a medir |
-| | **Total determinístico (sem título)** | **87,8 %** |
+| `vizinho_cep5` | nome casou, mas fora da pegada; único candidato a ≤ tol km de ≥N vias ok no mesmo CEP-5 (ou bairro) | a medir |
+| | **Total determinístico (sem título / CEP-5)** | **87,8 %** |
 
 Fuzzy por distância de edição fica **fora** (atrás de `--fuzzy`): rendia +5,2 % bruto produzindo
 `flor de cereja` → `flor de cera` e `mércia` → `meca`.
@@ -116,6 +119,7 @@ Exemplo: DNE `Olímpio Carr Ribeiro` + `TLO=Rua` ↔ OSM `Rua Doutor Olímpio Ca
 **Auditoria no relatório** (`DNE_GEO_RELATORIO_{UF}.json`):
 
 - `titulo_exemplos` — até 30 matches `titulo` / `titulo_fonetico` com núcleos, tokens removidos e CEP
+- `vizinho_cep5_exemplos` — até 30 recuperações CEP-5/bairro (vizinhas, distâncias, `nome_regra`)
 - `sem_nome_osm_exemplos` — até 30 residual sem match (com `cep5` e núcleo bare) para amostrar o que falta
 
 **Guarda kind-aware:** candidato de área só vale para `TLO_TX` ∈ {Praça, Largo, Parque, Jardim,
@@ -296,6 +300,27 @@ municipal mais próxima do centroide). Perdedores → `ambiguo` / `conflito_muni
 Uma via física é de uma cidade só; falsos `ok` envenenam o produto mais que vazios.
 
 Desligar: `--sem-exclusao-cluster`. Relatório: `clusters_multi_municipio`, `revogados_conflito_municipio`.
+
+### Fase 5e — vizinhança CEP-5 (ou bairro)
+
+Depois do envelope, linhas ainda `fora_do_footprint` com candidatos de **nome** são testadas
+contra vias **já `ok`** no mesmo município:
+
+1. Âncoras = linhas ok com o mesmo **CEP-5** (`digits(cep).slice(0,5)`); se houver menos que
+   `--vizinho-cep5-min` (default **3**), cai para o mesmo **`bai_nu_ini`**.
+2. Para cada candidato de nome, distância ao **vizinho mais próximo** (não raio de centroide —
+   isso foi o defeito da âncora local removida).
+3. Filtra candidatos a ≤ `--vizinho-cep5-tol-km` (default **1** km).
+4. Aceita **somente** se sobrar **exatamente 1** e a extensão do cluster for ok.
+
+`geo_regra=vizinho_cep5`. O relatório grava `vizinho_cep5_recuperados` e
+`vizinho_cep5_exemplos` (CEP-5, fonte, nº de vizinhas, distâncias, top-3 vizinhas, `nome_regra`
+que gerou os candidatos).
+
+Desligar: `--sem-vizinho-cep5`.
+
+Diferença da âncora local antiga: índice fixo (sem encadear recovery fraca), vizinho-mais-próximo,
+mínimo de âncoras, e só no resíduo pós-envelope.
 
 ### O que as amostras revelaram
 

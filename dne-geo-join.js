@@ -18,6 +18,9 @@
  *     --footprint-dilate=1  células de halo na pegada municipal
  *     --envelope-tol-km=1   recupera fora_do_footprint com 1 candidato a ≤N km da mancha
  *     --sem-envelope        desliga a recuperação por envelope
+ *     --vizinho-cep5-tol-km=1  recupera fora_do_footprint por vizinhança CEP-5 (km)
+ *     --vizinho-cep5-min=3    mínimo de vias ok no mesmo CEP-5 (ou bairro)
+ *     --sem-vizinho-cep5    desliga a recuperação por vizinhança CEP-5
  *     --sem-exclusao-cluster desliga a exclusividade de cluster entre municípios
  *     --quiet
  */
@@ -32,15 +35,29 @@ var txtAt = require('./txt-at-writer');
 
 var REGRAS = [
 	'exato', 'area', 'name_alt', 'addr', 'nucleo', 'fonetico',
-	'titulo', 'titulo_fonetico'
+	'titulo', 'titulo_fonetico', 'vizinho_cep5'
 ];
 
-// Houve aqui uma "âncora local" (bairro/CEP) para recuperar o resíduo
-// `fora_do_footprint`. Foi medida e removida: rendia 36 linhas em 341 813 (SP) e
-// 34 em MG, porque é redundante com o crescimento do footprint na 2ª volta, que
-// já dilata ~1,1 km em torno de cada cluster resolvido. Aumentar a tolerância só
-// piorava — a 5 km revertia 716 por conflito de município para ganhar 491.
-// Ver docs/geo/amostras-ambiguo-sp.md.
+// A "âncora local" antiga (centroide + raio = max dist) foi medida e removida:
+// rendia ~36 linhas e o raio explodia com outliers. A fase 5e (vizinho CEP-5)
+// é outra coisa: distância ao **vizinho mais próximo** já ok no mesmo CEP-5
+// (fallback: bairro), só no resíduo `fora_do_footprint`, candidato único.
+// Ver docs/geo/amostras-ambiguo-sp.md e docs/geo/dne-geo-join.md §Fase 5e.
+
+function digitsCep5(cep) {
+	var d = String(cep || '').replace(/\D/g, '');
+	return d.length >= 5 ? d.slice(0, 5) : '';
+}
+
+/** Distância ao ponto mais próximo (km). Infinity se lista vazia. */
+function nearestDistKm(lat, lng, pts) {
+	var best = Infinity;
+	for (var i = 0; i < pts.length; i++) {
+		var d = geo.distKm(lat, lng, pts[i].lat, pts[i].lng);
+		if (d < best) best = d;
+	}
+	return best;
+}
 
 function readLines(file, encoding, onLine) {
 	return new Promise(function (resolve, reject) {
@@ -322,6 +339,9 @@ async function run(opts) {
 	var envelopeTolKm = opts.envelopeTolKm == null ? 1 : opts.envelopeTolKm;
 	var useEnvelope = opts.semEnvelope ? false : true;
 	var useExclusao = opts.semExclusaoCluster ? false : true;
+	var useVizinhoCep5 = opts.semVizinhoCep5 ? false : true;
+	var vizinhoCep5TolKm = opts.vizinhoCep5TolKm == null ? 1 : opts.vizinhoCep5TolKm;
+	var vizinhoCep5Min = opts.vizinhoCep5Min == null ? 3 : opts.vizinhoCep5Min;
 
 	log('DNE  : ' + opts.dneDir);
 	log('OSM  : ' + opts.osmDir);
@@ -587,6 +607,120 @@ async function run(opts) {
 		}
 		stats.envelope_recuperados = envelopeOk;
 
+		// ---- Fase 5e: vizinhança CEP-5 (ou bairro) no resíduo fora_do_footprint
+		// Distância ao vizinho mais próximo já ok — nunca raio de centroide.
+		// Aceita só se sobrar exatamente 1 candidato de nome a ≤ tol km de ≥min âncoras.
+		var vizinhoOk = 0;
+		var exemplosVizinho = [];
+		if (useVizinhoCep5 && vizinhoCep5TolKm > 0 && vizinhoCep5Min > 0) {
+			var byCep5Loc = new Map(); // loc_nu|cep5 -> [{lat,lng,log_nu,log_no}]
+			var byBaiNu = new Map();   // bai_nu -> idem
+			for (var vi = 0; vi < rows.length; vi++) {
+				var rv = rows[vi];
+				if (rv.status !== 'ok' || !rv.cluster) continue;
+				var pt = {
+					lat: rv.cluster.agg.lat,
+					lng: rv.cluster.agg.lng,
+					log_nu: rv.log_nu,
+					log_no: rv.log_no
+				};
+				var c5 = digitsCep5(rv.cep);
+				if (c5) {
+					var ck = rv.loc_nu + '|' + c5;
+					var ca = byCep5Loc.get(ck);
+					if (ca) ca.push(pt); else byCep5Loc.set(ck, [pt]);
+				}
+				if (rv.bai_ini) {
+					var ba = byBaiNu.get(rv.bai_ini);
+					if (ba) ba.push(pt); else byBaiNu.set(rv.bai_ini, [pt]);
+				}
+			}
+			for (var v5 = 0; v5 < rows.length; v5++) {
+				var rV = rows[v5];
+				if (rV.status !== 'ambiguo' || rV.motivo !== 'fora_do_footprint') continue;
+				var gotV = cascadeCandidates(rV, idx, clusters);
+				if (!gotV.cand.length) continue;
+				var fonte = 'cep5';
+				var anchors = null;
+				var c5r = digitsCep5(rV.cep);
+				if (c5r) anchors = byCep5Loc.get(rV.loc_nu + '|' + c5r) || null;
+				if (!anchors || anchors.length < vizinhoCep5Min) {
+					anchors = rV.bai_ini ? (byBaiNu.get(rV.bai_ini) || null) : null;
+					fonte = 'bairro';
+				}
+				if (!anchors || anchors.length < vizinhoCep5Min) continue;
+				var pertoV = [];
+				for (var pv = 0; pv < gotV.cand.length; pv++) {
+					var agV = clusters[gotV.cand[pv]].agg;
+					var dV = nearestDistKm(agV.lat, agV.lng, anchors);
+					if (dV <= vizinhoCep5TolKm) {
+						pertoV.push({ idx: gotV.cand[pv], dist: dV });
+					}
+				}
+				if (pertoV.length !== 1) continue;
+				var alvoV = clusters[pertoV[0].idx];
+				var agVV = alvoV.agg;
+				var extV = Math.max(
+					(agVV.latMax - agVV.latMin) * 111,
+					(agVV.lngMax - agVV.lngMin) * 102
+				);
+				if (extV > maxExtentKm) continue;
+				// top-3 vizinhas para auditoria
+				var vizSorted = anchors.slice().sort(function (a, b) {
+					return geo.distKm(agVV.lat, agVV.lng, a.lat, a.lng) -
+						geo.distKm(agVV.lat, agVV.lng, b.lat, b.lng);
+				});
+				var vizTop = [];
+				for (var vt = 0; vt < vizSorted.length && vt < 3; vt++) {
+					vizTop.push({
+						log_nu: vizSorted[vt].log_nu,
+						log_no: vizSorted[vt].log_no,
+						dist_km: Math.round(
+							geo.distKm(agVV.lat, agVV.lng, vizSorted[vt].lat, vizSorted[vt].lng) * 1000
+						) / 1000
+					});
+				}
+				rV.cluster = alvoV;
+				rV.motivo = '';
+				rV.regra = 'vizinho_cep5';
+				rV.status = 'ok';
+				rV.nCand = gotV.cand.length;
+				rV.via_vizinho_cep5 = true;
+				rV.nome_regra = gotV.regra;
+				rV.vizinho_fonte = fonte;
+				rV.vizinho_n = anchors.length;
+				rV.vizinho_dist = pertoV[0].dist;
+				vizinhoOk++;
+				if (exemplosVizinho.length < 30) {
+					exemplosVizinho.push({
+						log_nu: rV.log_nu,
+						dne_nome: (rV.tlo + ' ' + rV.log_no).trim(),
+						cep: rV.cep,
+						cep5: c5r,
+						localidade: (localidades.get(rV.loc_nu) || {}).nome || '',
+						geo_regra: 'vizinho_cep5',
+						nome_regra: gotV.regra,
+						fonte: fonte,
+						n_vizinhos: anchors.length,
+						dist_vizinho_km: Math.round(pertoV[0].dist * 1000) / 1000,
+						n_cand_nome: gotV.cand.length,
+						vizinhos: vizTop
+					});
+				}
+				var bbV = porBairro.get(rV.bai_ini);
+				if (!bbV) porBairro.set(rV.bai_ini, bbV = { sLat: 0, sLng: 0, n: 0 });
+				bbV.sLat += agVV.lat;
+				bbV.sLng += agVV.lng;
+				bbV.n++;
+			}
+			if (vizinhoOk) {
+				log('      vizinho_cep5: recuperou ' + vizinhoOk +
+					' (tol=' + vizinhoCep5TolKm + ' km, min=' + vizinhoCep5Min + ')');
+			}
+		}
+		stats.vizinho_cep5_recuperados = vizinhoOk;
+		stats.vizinho_cep5_exemplos = exemplosVizinho;
+
 		// ---- Fase 5d: cluster usado por 2+ municípios → dono único
 		// Uma via física é de uma cidade só. Preferência: loc_nu com mais linhas ok;
 		// empate → âncora municipal mais próxima do centroide do cluster.
@@ -799,8 +933,10 @@ async function run(opts) {
 		ambiguo_exemplos: exemplosAmbiguo,
 		titulo_exemplos: exemplosTitulo,
 		sem_nome_osm_exemplos: exemplosSemNome,
+		vizinho_cep5_exemplos: stats.vizinho_cep5_exemplos || [],
 		rodadas: stats.rodadas,
 		envelope_recuperados: stats.envelope_recuperados || 0,
+		vizinho_cep5_recuperados: stats.vizinho_cep5_recuperados || 0,
 		clusters_multi_municipio: stats.clusters_multi_municipio || 0,
 		linhas_em_cluster_multi: stats.linhas_em_cluster_multi || 0,
 		revogados_conflito_municipio: stats.revogados_conflito_municipio || 0,
@@ -834,6 +970,9 @@ function parseCli(argv) {
 		else if (a.indexOf('--footprint-dilate=') === 0) o.footprintDilate = Number(a.slice(19));
 		else if (a.indexOf('--envelope-tol-km=') === 0) o.envelopeTolKm = Number(a.slice(18));
 		else if (a === '--sem-envelope') o.semEnvelope = true;
+		else if (a.indexOf('--vizinho-cep5-tol-km=') === 0) o.vizinhoCep5TolKm = Number(a.slice(22));
+		else if (a.indexOf('--vizinho-cep5-min=') === 0) o.vizinhoCep5Min = Number(a.slice(19));
+		else if (a === '--sem-vizinho-cep5') o.semVizinhoCep5 = true;
 		else if (a === '--sem-exclusao-cluster') o.semExclusaoCluster = true;
 		else if (a === '--quiet') o.quiet = true;
 	}
@@ -847,7 +986,9 @@ module.exports = {
 	buildDerivedIndexes: buildDerivedIndexes,
 	candidatesFor: candidatesFor,
 	resolveOsmLogradouro: resolveOsmLogradouro,
-	loadOsmStreets: loadOsmStreets
+	loadOsmStreets: loadOsmStreets,
+	digitsCep5: digitsCep5,
+	nearestDistKm: nearestDistKm
 };
 
 if (require.main === module) {

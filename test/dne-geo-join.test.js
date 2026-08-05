@@ -354,11 +354,108 @@ test('dne-geo-join: envelope (buraco na pegada) e exclusão multi-município', a
 	assert.ok(rel.clusters_multi_municipio >= 1);
 });
 
+/**
+ * dilate=0: todas as vias ok na mesma célula 0,01°; alvo ~1,5 km ao sul
+ * (outra célula) com o mesmo CEP-5 44444 + homônimo longe.
+ * Envelope desligado → só vizinho_cep5 recupera o cluster perto.
+ */
+function setupVizinhoCep5Dirs() {
+	var base = fs.mkdtempSync(path.join(os.tmpdir(), 'dne-geo-v5-'));
+	var dne = path.join(base, 'dne');
+	var osm = path.join(base, 'osm');
+	var out = path.join(base, 'out');
+	fs.mkdirSync(dne);
+	fs.mkdirSync(osm);
+
+	var loc = ['1@ZZ@Cidade A@@1@M@@Cid A@1234567'].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOCALIDADE.TXT'), Buffer.from(loc, 'latin1'));
+	var bai = ['10@ZZ@1@Centro@Ctr'].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_BAIRRO.TXT'), Buffer.from(bai, 'latin1'));
+
+	var log = [
+		'300@ZZ@1@10@@Ancora Um@@44444001@Rua@S@R Ancora Um',
+		'301@ZZ@1@10@@Ancora Dois@@44444002@Rua@S@R Ancora Dois',
+		'302@ZZ@1@10@@Vizinha Um@@44444100@Rua@S@R Vizinha Um',
+		'303@ZZ@1@10@@Vizinha Dois@@44444110@Rua@S@R Vizinha Dois',
+		'304@ZZ@1@10@@Vizinha Tres@@44444120@Rua@S@R Vizinha Tres',
+		// mesmo CEP-5 44444; nome com 2 clusters OSM (perto + longe)
+		'305@ZZ@1@10@@Alvo Cep@@44444999@Rua@S@R Alvo Cep'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOGRADOURO_ZZ.TXT'), Buffer.from(log, 'latin1'));
+
+	// Offsets < 0,01° → mesma célula; SUL ≈ 1,55 km (fora da célula com dilate=0)
+	var SUL = A_LAT - 0.014;
+	var ways = [
+		osmRow(1, 'Rua Ancora Um', 'rua ancora um', 'residential', A_LAT, A_LNG),
+		osmRow(2, 'Rua Ancora Dois', 'rua ancora dois', 'residential', A_LAT - 0.0003, A_LNG),
+		osmRow(3, 'Rua Vizinha Um', 'rua vizinha um', 'residential', A_LAT - 0.0005, A_LNG + 0.0002),
+		osmRow(4, 'Rua Vizinha Dois', 'rua vizinha dois', 'residential', A_LAT - 0.0007, A_LNG - 0.0002),
+		osmRow(5, 'Rua Vizinha Tres', 'rua vizinha tres', 'residential', A_LAT - 0.0004, A_LNG + 0.0001),
+		osmRow(6, 'Rua Alvo Cep', 'rua alvo cep', 'residential', SUL, A_LNG),
+		osmRow(7, 'Rua Alvo Cep', 'rua alvo cep', 'residential', LONGE_LAT, LONGE_LNG, 40)
+	].join('\n');
+	fs.writeFileSync(path.join(osm, 'OSM_LOGRADOURO_ZZ.TXT'), ways, 'utf8');
+
+	return { base: base, dne: dne, osm: osm, out: out };
+}
+
+test('dne-geo-join: vizinho_cep5 recupera fora_do_footprint perto do CEP-5', async function (t) {
+	var d = setupVizinhoCep5Dirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		footprintDilate: 0,
+		semEnvelope: true,
+		vizinhoCep5TolKm: 2,
+		vizinhoCep5Min: 3
+	});
+	var row = readOut(d.out, 'ZZ');
+
+	assert.equal(row['305'][20], 'ok', 'recuperado por vizinhança CEP-5');
+	assert.equal(row['305'][21], 'vizinho_cep5');
+	assert.ok(row['305'][14] !== '');
+	assert.ok(Math.abs(Number(row['305'][14]) - (A_LAT - 0.014)) < 0.002,
+		'escolhe o cluster perto das vizinhas, não o de 150 km');
+	assert.ok(rel.vizinho_cep5_recuperados >= 1);
+	assert.ok(Array.isArray(rel.vizinho_cep5_exemplos));
+	assert.ok(rel.vizinho_cep5_exemplos.some(function (e) {
+		return e.log_nu === '305' && e.fonte === 'cep5' && e.n_vizinhos >= 3;
+	}));
+});
+
+test('dne-geo-join: --sem-vizinho-cep5 deixa fora_do_footprint vazio', async function (t) {
+	var d = setupVizinhoCep5Dirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		footprintDilate: 0,
+		semEnvelope: true,
+		semVizinhoCep5: true
+	});
+	var row = readOut(d.out, 'ZZ');
+	assert.equal(row['305'][20], 'ambiguo');
+	assert.equal(row['305'][14], '');
+	assert.equal(rel.vizinho_cep5_recuperados || 0, 0);
+});
+
+test('digitsCep5 e nearestDistKm', function () {
+	assert.equal(join.digitsCep5('04775-120'), '04775');
+	assert.equal(join.digitsCep5('04775120'), '04775');
+	assert.equal(join.digitsCep5(''), '');
+	var d = join.nearestDistKm(0, 0, [{ lat: 0, lng: 0.01 }, { lat: 1, lng: 1 }]);
+	assert.ok(d < 2 && d > 0.5);
+	assert.equal(join.nearestDistKm(0, 0, []), Infinity);
+});
+
 test('dne-geo-join: parseCli lê as opções', function () {
 	var o = join.parseCli([
 		'--dne=D:\\dne', '--osm=G:\\osm', '--out=G:\\out', '--uf=sp',
 		'--cluster-cell=0.05', '--max-extent-km=20', '--footprint-dilate=2',
-		'--envelope-tol-km=0.5', '--sem-envelope', '--sem-exclusao-cluster', '--quiet'
+		'--envelope-tol-km=0.5', '--sem-envelope', '--sem-exclusao-cluster',
+		'--vizinho-cep5-tol-km=0.8', '--vizinho-cep5-min=2', '--sem-vizinho-cep5',
+		'--quiet'
 	]);
 	assert.equal(o.dneDir, 'D:\\dne');
 	assert.equal(o.osmDir, 'G:\\osm');
@@ -370,5 +467,8 @@ test('dne-geo-join: parseCli lê as opções', function () {
 	assert.equal(o.envelopeTolKm, 0.5);
 	assert.equal(o.semEnvelope, true);
 	assert.equal(o.semExclusaoCluster, true);
+	assert.equal(o.vizinhoCep5TolKm, 0.8);
+	assert.equal(o.vizinhoCep5Min, 2);
+	assert.equal(o.semVizinhoCep5, true);
 	assert.equal(o.quiet, true);
 });
