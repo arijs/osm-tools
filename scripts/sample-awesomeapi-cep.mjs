@@ -1,9 +1,16 @@
 /**
  * Amostra CEPs sem coordenada no DNE_GEO e consulta AwesomeAPI.
- * Resultados em CEP_EXTERNO.TXT (formato DNE). CEPs já no cache **não** são reconsultados.
+ * Cache em `CEP_EXTERNO_{UF}.TXT` (um arquivo por UF). CEPs já no cache **não**
+ * são reconsultados.
  *
  *   node scripts/sample-awesomeapi-cep.mjs
- *   node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-local --cache=G:\dne-geo-local\CEP_EXTERNO.TXT --n=1000
+ *   node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-br --n=1000
+ *   node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-br --ufs=SP,RJ --n=500
+ *   node scripts/sample-awesomeapi-cep.mjs --cache=G:\legado\CEP_EXTERNO.TXT   # monólito
+ *
+ * Fontes em `--dir` (pasta do join):
+ *   DNE_GEO_LOGRADOURO_{UF}.TXT  → candidatos sem geo
+ *   CEP_EXTERNO_{UF}.TXT         → cache por UF (lê e grava)
  *
  * Chave: AWESOMEAPI_API_KEY em .env.local
  * Spec: docs/geo/cep-externo.md
@@ -21,6 +28,8 @@ const cepExt = require('../cep-externo.js');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
+const DEFAULT_DIR = 'G:\\dne-geo-br';
+
 function loadEnvLocal() {
 	const p = path.join(ROOT, '.env.local');
 	if (!fs.existsSync(p)) throw new Error('Falta .env.local com AWESOMEAPI_API_KEY');
@@ -37,14 +46,29 @@ function loadEnvLocal() {
 	return out;
 }
 
+/** UFs com DNE_GEO_LOGRADOURO_{UF}.TXT na pasta. */
+function detectUfsFromDir(dir) {
+	if (!dir || !fs.existsSync(dir)) return [];
+	return fs
+		.readdirSync(dir)
+		.map((n) => {
+			const m = n.match(/^DNE_GEO_LOGRADOURO_([A-Za-z]{2})\.TXT$/i);
+			return m ? m[1].toUpperCase() : null;
+		})
+		.filter(Boolean)
+		.sort();
+}
+
 function parseArgs(argv) {
 	const o = {
-		dir: 'G:\\dne-geo-local',
+		dir: DEFAULT_DIR,
 		n: 1000,
-		ufs: ['SP', 'RJ', 'MG', 'ES'],
+		ufs: null, // null → auto a partir de DNE_GEO_* no --dir
 		concurrency: 4,
-		cache: path.join('G:\\dne-geo-local', 'CEP_EXTERNO.TXT'),
-		qualityOut: path.join('G:\\dne-geo-local', 'qualidade'),
+		/** null = cache multi-UF em --dir; string = monólito legado */
+		cache: null,
+		cacheDir: null,
+		qualityOut: null,
 		delayMs: 40,
 		force: false,
 		retryErrors: false,
@@ -53,15 +77,18 @@ function parseArgs(argv) {
 	for (const a of argv) {
 		if (a.startsWith('--dir=')) o.dir = a.slice(6);
 		else if (a.startsWith('--n=')) o.n = Number(a.slice(4));
-		else if (a.startsWith('--ufs=')) o.ufs = a.slice(6).split(',').map((s) => s.trim().toUpperCase());
+		else if (a.startsWith('--ufs=')) o.ufs = a.slice(6).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
 		else if (a.startsWith('--concurrency=')) o.concurrency = Number(a.slice(14));
 		else if (a.startsWith('--cache=')) o.cache = a.slice(8);
+		else if (a.startsWith('--cache-dir=')) o.cacheDir = a.slice(12);
 		else if (a.startsWith('--quality-out=')) o.qualityOut = a.slice(14);
 		else if (a.startsWith('--delay-ms=')) o.delayMs = Number(a.slice(11));
 		else if (a === '--force') o.force = true;
 		else if (a === '--retry-errors') o.retryErrors = true;
 		else if (a === '--no-quality') o.noQuality = true;
 	}
+	if (!o.cacheDir) o.cacheDir = o.dir;
+	if (!o.qualityOut) o.qualityOut = path.join(o.dir, 'qualidade');
 	return o;
 }
 
@@ -70,7 +97,9 @@ const CAPITAL_HINTS = new Set([
 	'campinas', 'santos', 'guarulhos', 'osasco', 'sao bernardo do campo',
 	'santo andre', 'ribeirao preto', 'sorocaba', 'niteroi', 'duque de caxias',
 	'nova iguacu', 'sao goncalo', 'uberlandia', 'juiz de fora', 'contagem',
-	'betim', 'vila velha', 'serra', 'cariacica',
+	'betim', 'vila velha', 'serra', 'cariacica', 'curitiba', 'porto alegre',
+	'florianopolis', 'salvador', 'recife', 'fortaleza', 'brasilia', 'manaus',
+	'belem', 'goiania',
 ]);
 
 function normName(s) {
@@ -113,6 +142,7 @@ async function collectMissing(dir, ufs) {
 			input: fs.createReadStream(file, { encoding: 'utf8' }),
 			crlfDelay: Infinity,
 		});
+		let nUf = 0;
 		for await (const line of rl) {
 			if (!line) continue;
 			const p = line.split('@');
@@ -135,8 +165,9 @@ async function collectMissing(dir, ufs) {
 			};
 			row.score = relevanceScore(row);
 			rows.push(row);
+			nUf++;
 		}
-		console.error(`  ${uf}: acumulado ${rows.length} linhas sem geo com CEP`);
+		console.error(`  ${uf}: ${nUf} linhas sem geo com CEP (acum. ${rows.length})`);
 	}
 	return rows;
 }
@@ -228,18 +259,57 @@ function cacheHitPolicy(row, opts) {
 	return true; // hit → não reconsultar
 }
 
+/**
+ * Carrega cache: monólito (--cache=arquivo) ou multi-UF no cacheDir.
+ * Também inclui monólito CEP_EXTERNO.TXT no dir se ainda existir.
+ */
+async function loadCaches(opts) {
+	if (opts.cache) {
+		const map = await cepExt.loadCache(opts.cache);
+		return { map, mode: 'file', paths: [opts.cache] };
+	}
+	const listed = cepExt.listCacheFiles(opts.cacheDir, opts.ufs);
+	const map = await cepExt.loadCacheMulti(opts.cacheDir, { ufs: opts.ufs });
+	return {
+		map,
+		mode: 'dir',
+		paths: listed.map((f) => f.path),
+		files: listed,
+	};
+}
+
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	const env = loadEnvLocal();
 	const apiKey = env.AWESOMEAPI_API_KEY;
 	if (!apiKey) throw new Error('AWESOMEAPI_API_KEY vazio no .env.local');
 
-	console.error(`Dir:   ${opts.dir}`);
-	console.error(`Cache: ${opts.cache}`);
+	if (!opts.ufs || !opts.ufs.length) {
+		opts.ufs = detectUfsFromDir(opts.dir);
+		if (!opts.ufs.length) {
+			throw new Error(
+				`Nenhuma DNE_GEO_LOGRADOURO_*.TXT em ${opts.dir}. ` +
+				`Rode o join ou passe --ufs=SP,RJ`
+			);
+		}
+	}
+
+	console.error(`Dir:       ${opts.dir}  (DNE_GEO_LOGRADOURO_*)`);
+	console.error(`Cache:     ${opts.cache || opts.cacheDir + '\\CEP_EXTERNO_{UF}.TXT'}`);
+	console.error(`Qualidade: ${opts.qualityOut}`);
 	console.error(`Amostra alvo: ${opts.n} CEPs novos | UFs: ${opts.ufs.join(',')}`);
 
-	const cache = await cepExt.loadCache(opts.cache);
-	console.error(`Cache carregado: ${cache.size} CEPs`);
+	const loaded = await loadCaches(opts);
+	const cache = loaded.map;
+	console.error(
+		`Cache carregado: ${cache.size} CEPs` +
+		(loaded.mode === 'dir'
+			? ` (${loaded.paths.length} arquivos)`
+			: ` (monólito)`)
+	);
+	if (loaded.mode === 'dir' && loaded.paths.length === 0) {
+		console.error('  (nenhum CEP_EXTERNO_*.TXT ainda — cache vazio, ok)');
+	}
 
 	console.error('Coletando linhas sem coordenada…');
 	const missing = await collectMissing(opts.dir, opts.ufs);
@@ -264,6 +334,8 @@ async function main() {
 			eligible: 0,
 			fetched: 0,
 			skipped_cached: before,
+			dir: opts.dir,
+			ufs: opts.ufs,
 		};
 		console.log(JSON.stringify(report));
 		return;
@@ -292,6 +364,8 @@ async function main() {
 			if (opts.delayMs > 0) await sleep(opts.delayMs);
 			const { http, body } = await fetchCep(row.cep, apiKey);
 			const rec = cepExt.fromAwesomeResponse(row.cep, http, body);
+			// se API não trouxe UF, herda a do DNE (candidatos do collect)
+			if (!rec.api_state && row.uf) rec.api_state = row.uf;
 			done++;
 			if (done % 50 === 0 || done === sample.length) {
 				const elapsed = (Date.now() - t0) / 1000;
@@ -300,12 +374,22 @@ async function main() {
 			return rec;
 		} catch (e) {
 			done++;
-			return cepExt.fromAwesomeResponse(row.cep, 0, null);
+			const rec = cepExt.fromAwesomeResponse(row.cep, 0, null);
+			if (row.uf) rec.api_state = row.uf;
+			return rec;
 		}
 	});
 	process.stderr.write('\n');
 
-	cepExt.mergeAndSave(opts.cache, cache, fetched);
+	let saveInfo;
+	if (opts.cache) {
+		cepExt.mergeAndSave(opts.cache, cache, fetched);
+		saveInfo = { mode: 'file', path: opts.cache, size: cache.size };
+	} else {
+		const r = cepExt.mergeAndSaveByUf(opts.cacheDir, cache, fetched);
+		saveInfo = { mode: 'by_uf', ufs: r.ufs, files: r.files, size: r.size };
+		console.error(`Cache gravado por UF: ${r.ufs.join(',')}`);
+	}
 
 	const summary = {
 		fetched: fetched.length,
@@ -317,10 +401,11 @@ async function main() {
 		error: fetched.filter((r) => r.status === 'error').length,
 		empty_coords: fetched.filter((r) => r.status === 'empty_coords').length,
 		elapsed_sec: Math.round(((Date.now() - t0) / 1000) * 10) / 10,
-		cache_path: opts.cache,
+		dir: opts.dir,
+		ufs: opts.ufs,
+		cache_save: saveInfo,
 	};
-	// relatório leve ao lado do cache
-	const repPath = opts.cache.replace(/\.TXT$/i, '') + '_RELATORIO.json';
+	const repPath = path.join(opts.dir, 'CEP_EXTERNO_RELATORIO.json');
 	fs.writeFileSync(
 		repPath,
 		JSON.stringify({ summary, byStatus, sample_size: sample.length, at: new Date().toISOString() }, null, 2),
@@ -328,7 +413,6 @@ async function main() {
 	);
 
 	// Qualidade do bucket que acabou de ser buscado
-	// (lista de CEPs via arquivo — spawn com 5k CEPs na CLI estoura ENAMETOOLONG no Windows)
 	if (!opts.noQuality && fetched.length > 0) {
 		const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z').slice(0, 15);
 		const label = `bucket-${stamp}-n${fetched.length}`;
@@ -336,18 +420,20 @@ async function main() {
 		fs.mkdirSync(opts.qualityOut, { recursive: true });
 		fs.writeFileSync(listPath, fetched.map((r) => r.cep).join('\n') + '\n', 'utf8');
 		console.error(`Gerando relatório de qualidade (${label})…`);
-		const q = spawnSync(
-			process.execPath,
-			[
-				path.join(ROOT, 'scripts', 'cep-externo-quality.mjs'),
-				`--cache=${opts.cache}`,
-				`--dne=${opts.dir}`,
-				`--out=${opts.qualityOut}`,
-				`--ceps-file=${listPath}`,
-				`--label=${label}`,
-			],
-			{ encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }
-		);
+		const qArgs = [
+			path.join(ROOT, 'scripts', 'cep-externo-quality.mjs'),
+			`--dne=${opts.dir}`,
+			`--out=${opts.qualityOut}`,
+			`--ceps-file=${listPath}`,
+			`--label=${label}`,
+			`--ufs=${opts.ufs.join(',')}`,
+		];
+		if (opts.cache) qArgs.push(`--cache=${opts.cache}`);
+		else qArgs.push(`--cache-dir=${opts.cacheDir}`);
+		const q = spawnSync(process.execPath, qArgs, {
+			encoding: 'utf8',
+			maxBuffer: 20 * 1024 * 1024,
+		});
 		if (q.stderr) process.stderr.write(q.stderr);
 		if (q.status !== 0) {
 			console.error('aviso: falha ao gerar qualidade (cache ok).', q.error || q.status);
@@ -359,7 +445,6 @@ async function main() {
 
 	console.error('\n=== RESUMO ===');
 	console.error(JSON.stringify(summary, null, 2));
-	console.error(`Cache: ${opts.cache}`);
 	console.log(JSON.stringify(summary));
 }
 

@@ -11,6 +11,7 @@
     "test:extract": "node --test test/extract-geocode.test.js test/name-norm.test.js test/uf-br.test.js",
     "extract:geocode": "node extract-geocode-pbf.js",
     "dne:join": "node dne-geo-join.js",
+    "shard:osm": "node scripts/shard-osm-txt.js",
     "test:join": "node --test test/dne-geo-join.test.js test/name-keys.test.js test/geo-cluster.test.js",
     "test:cep": "node --test test/cep-externo.test.js",
     "cep:sample": "node scripts/sample-awesomeapi-cep.mjs",

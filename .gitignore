@@ -21,3 +21,4 @@ test/fixtures/large200.osm.bz2
 test/fixtures/*-results.json
 test/fixtures/*-results-bzip.json
 test/fixtures/*-pbf-results.json
+extract-geocode-pbf-brazil-regions.txt

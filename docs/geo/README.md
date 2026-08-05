@@ -4,6 +4,7 @@ Documentação operacional e de desenho do caminho **OpenStreetMap (PBF) → arq
 
 | Documento | Conteúdo |
 |-----------|----------|
+| [**proximo-passo-brasil.md**](./proximo-passo-brasil.md) | **Comece aqui** se o extract BR já rodou: flatten → join → load DNE/locais |
 | [**estado-atual.md**](./estado-atual.md) | O que já foi feito (Sudeste: estados, municípios, join DNE↔OSM) e números reais |
 | [**extract-e-artefatos.md**](./extract-e-artefatos.md) | `extract-geocode-pbf.js`, formatos TXT, two-pass, **resume**, wipe |
 | [**match-estado-municipio.md**](./match-estado-municipio.md) | CLI `osm:locais:enrich-geo`, IBGE, lições (distrito 9 dígitos, `admin_centre`) |
@@ -44,6 +45,12 @@ espacial de 793 mil ways — trabalho de ferramenta de dados. O PHP volta a ser 
 
 ## Próximo passo de produto
 
-1. Rodar `osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro --uf=SP` (e demais UFs SE) apontando para a pasta do join — a CLI prefere `DNE_GEO_*` automaticamente.  
+**Brasil (extract regional já feito):** seguir o passo a passo em
+[**proximo-passo-brasil.md**](./proximo-passo-brasil.md) — achatar shards →
+`dne-geo-join.js` por UF → `osm:locais:enrich-geo` (admin) + `osm:dne:enrich-geo`
+(pasta com `DNE_GEO_*`).
+
+1. Rodar `osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=logradouro` (ou
+   `G:\dne-geo-local` se só Sudeste) — a CLI prefere `DNE_GEO_*` automaticamente.  
 2. Migration `geo_origem` / `geo_status` (ainda opcional no schema; útil para reprocessar regra fraca).  
 3. Expor lat/lng na busca quando o índice tiver geo.

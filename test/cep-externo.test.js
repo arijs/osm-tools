@@ -74,6 +74,49 @@ test('fromAwesomeResponse classifica 200/404/empty', function () {
 	assert.equal(empty.status, 'empty_coords');
 });
 
+test('cache multi-UF: split + loadCacheMulti + mergeAndSaveByUf', async function () {
+	var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cep-multi-'));
+	try {
+		var mono = path.join(dir, 'CEP_EXTERNO.TXT');
+		var map0 = new Map();
+		cepExt.mergeAndSave(mono, map0, [
+			cepExt.fromAwesomeResponse('01001000', 200, {
+				city: 'São Paulo', state: 'SP', lat: '-23.55', lng: '-46.63', city_ibge: '3550308',
+			}),
+			cepExt.fromAwesomeResponse('20010070', 200, {
+				city: 'Rio de Janeiro', state: 'RJ', lat: '-22.9', lng: '-43.2',
+			}),
+			cepExt.fromAwesomeResponse('00000000', 404, null),
+		]);
+		// 404 sem state → XX
+		var split = await cepExt.splitCacheByUf(mono, dir, { removeSource: true });
+		assert.equal(split.total, 3);
+		assert.ok(split.byUf.SP >= 1);
+		assert.ok(split.byUf.RJ >= 1);
+		assert.ok(fs.existsSync(cepExt.cachePathForUf(dir, 'SP')));
+		assert.ok(fs.existsSync(cepExt.cachePathForUf(dir, 'RJ')));
+		assert.equal(fs.existsSync(mono), false);
+
+		var loaded = await cepExt.loadCacheMulti(dir, { ufs: ['SP', 'RJ'] });
+		assert.equal(loaded.size, 3); // SP+RJ+XX (XX sempre entra com ufs filter)
+		assert.equal(loaded.get('01001000').api_state, 'SP');
+
+		// append novo CEP em MG
+		var r = cepExt.mergeAndSaveByUf(dir, loaded, [
+			cepExt.fromAwesomeResponse('30130000', 200, {
+				city: 'Belo Horizonte', state: 'MG', lat: '-19.9', lng: '-43.9',
+			}),
+		]);
+		assert.ok(r.ufs.indexOf('MG') >= 0);
+		assert.ok(fs.existsSync(cepExt.cachePathForUf(dir, 'MG')));
+		var again = await cepExt.loadCacheMulti(dir);
+		assert.equal(again.size, 4);
+		assert.equal(again.has('01001000'), true);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('loadCache + mergeAndSave: não perde CEP e permite skip', async function () {
 	var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cep-ext-'));
 	var file = path.join(dir, 'CEP_EXTERNO.TXT');

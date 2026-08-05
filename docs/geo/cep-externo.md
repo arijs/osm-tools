@@ -18,13 +18,30 @@ O vínculo com o logradouro fica no **join** (`DNE_GEO_LOGRADOURO` tem `cep` na 
 
 ## Arquivo
 
+Canônico **por UF** (mesmo espírito de `DNE_GEO_*` / `OSM_LOGRADOURO_*`):
+
 ```text
-G:\dne-geo-local\CEP_EXTERNO.TXT     # canônico (ou --cache=…)
-# ou pasta de trabalho:
-_ignore/cep-externo/CEP_EXTERNO.TXT
+G:\dne-geo-br\CEP_EXTERNO_SP.TXT
+G:\dne-geo-br\CEP_EXTERNO_RJ.TXT
+G:\dne-geo-br\CEP_EXTERNO_MG.TXT
+…
+G:\dne-geo-br\CEP_EXTERNO_XX.TXT   # residual (API sem state / 404)
 ```
 
-Um único arquivo **nacional** (CEP já é único no Brasil). Não precisa `_{UF}`.
+A chave continua sendo o **CEP** (8 dígitos, único no Brasil). O sufixo `_{UF}` é só
+particionamento de arquivo (`api_state` da resposta). O sample carrega todos os
+`CEP_EXTERNO_*.TXT` da pasta (e ainda o monólito legado, se existir).
+
+```text
+# legado (ainda lido se presente):
+G:\dne-geo-br\CEP_EXTERNO.TXT
+```
+
+Partir monólito → por UF:
+
+```bash
+node scripts/split-cep-externo-by-uf.mjs --in=G:\dne-geo-br\CEP_EXTERNO.TXT --out=G:\dne-geo-br
+```
 
 ## Contrato — 13 colunas
 
@@ -70,24 +87,31 @@ Política default do script: **nunca** reconsultar CEP que já tem linha no arqu
 ## CLI
 
 ```bash
-# Converte a amostra JSONL antiga → CEP_EXTERNO.TXT (uma vez)
+# Converte a amostra JSONL antiga → monólito (uma vez), depois fatie
 node scripts/cep-externo-from-jsonl.mjs \
   --in=_ignore/awesomeapi-sample/results.jsonl \
-  --out=G:\dne-geo-local\CEP_EXTERNO.TXT
+  --out=G:\dne-geo-br\CEP_EXTERNO.TXT
+node scripts/split-cep-externo-by-uf.mjs --in=G:\dne-geo-br\CEP_EXTERNO.TXT --out=G:\dne-geo-br
 
-# Consulta só CEPs ainda não cacheados
+# Consulta só CEPs ainda não cacheados (default --dir=G:\dne-geo-br)
+# Lê DNE_GEO_LOGRADOURO_*.TXT + CEP_EXTERNO_{UF}.TXT; grava por UF
+node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-br --n=1000
+node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-br --ufs=SP,BA --n=500
+
+# Monólito legado (um arquivo só)
 node scripts/sample-awesomeapi-cep.mjs \
-  --dir=G:\dne-geo-local \
-  --cache=G:\dne-geo-local\CEP_EXTERNO.TXT \
+  --dir=G:\dne-geo-br \
+  --cache=G:\dne-geo-br\CEP_EXTERNO.TXT \
   --n=1000
 ```
 
 O script de amostra:
 
-1. Carrega o cache existente (`cep` → linha).
-2. Monta a lista de candidatos sem geo no DNE.
-3. **Remove CEPs já presentes no cache.**
-4. Consulta só o restante; **append** (ou rewrite estável ordenado por CEP).
+1. Detecta UFs a partir de `DNE_GEO_LOGRADOURO_*.TXT` em `--dir` (ou `--ufs=`).
+2. Carrega o cache multi-UF (`CEP_EXTERNO_{UF}.TXT` + monólito se houver).
+3. Monta candidatos sem geo no join (mesma pasta).
+4. **Remove CEPs já presentes no cache.**
+5. Consulta só o restante; grava `CEP_EXTERNO_{api_state}.TXT` (ordenado por CEP).
 
 ## Relatórios de qualidade (por bucket)
 

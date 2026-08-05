@@ -53,6 +53,20 @@ test('parseDatasets defaults e subset', function () {
 	assert.equal(sub.logradouro, false);
 });
 
+test('formatExtractSummary inclui bairro e logradouro', function () {
+	var { formatExtractSummary } = require('../extract-geocode-pbf');
+	var line = formatExtractSummary({
+		municipio: 0,
+		bairro: 1994,
+		logradouro: 179239,
+		logradouroNoGeom: 0,
+		streetWaves: 18
+	});
+	assert.match(line, /Municípios: 0/);
+	assert.match(line, /Bairros: 1994/);
+	assert.match(line, /Logradouros: 179239 \(sem geom: 0\)/);
+	assert.match(line, /waves=18/);
+});
 test('formatRow usa delimitador @', function () {
 	assert.equal(txtAt.formatRow(['a', 'b', 'c']), 'a@b@c\n');
 	assert.equal(txtAt.formatRow(['x@y', 'z']), 'x y@z\n');
@@ -185,4 +199,109 @@ test('runExtractGeocode emite TXT por nível e logradouro por UF', async functio
 	assert.ok(fs.existsSync(path.join(outDir, 'extract-checkpoint.json')));
 
 	rmrf(outDir);
+});
+
+test('filtro --uf=SP mantém logradouros SP e descarta fatia alheia', async function () {
+	ensureGeocodePbf();
+	var outSp = path.join(fixtures, 'geocode-mini-out-uf-sp');
+	var outRj = path.join(fixtures, 'geocode-mini-out-uf-rj');
+	rmrf(outSp);
+	rmrf(outRj);
+
+	function rows(dir, name) {
+		var p = path.join(dir, name);
+		if (!fs.existsSync(p)) return [];
+		return fs.readFileSync(p, 'utf8').split(/\r?\n/).filter(Boolean);
+	}
+
+	var result = await runExtractGeocode({
+		inputPath: geoPbf,
+		outDir: outSp,
+		quiet: true,
+		resume: false,
+		datasets: parseDatasets('estado,municipio,bairro,logradouro'),
+		uf: 'SP'
+	});
+	assert.equal(result.error, null);
+	assert.ok(result.counts.logradouro >= 1);
+	assert.ok(rows(outSp, 'OSM_LOGRADOURO_SP.TXT').length >= 1);
+
+	// filtro RJ no mesmo fixture (tudo em SP) → zero logradouro gravado
+	var r2 = await runExtractGeocode({
+		inputPath: geoPbf,
+		outDir: outRj,
+		quiet: true,
+		resume: false,
+		datasets: parseDatasets('logradouro'),
+		uf: 'RJ'
+	});
+	assert.equal(r2.error, null);
+	assert.equal(r2.counts.logradouro, 0);
+	rmrf(outSp);
+	rmrf(outRj);
+});
+
+test('wave-streets força flush mid-pass e ainda resolve geom', async function () {
+	ensureGeocodePbf();
+	var outWave = path.join(fixtures, 'geocode-mini-out-wave');
+	rmrf(outWave);
+
+	var result = await runExtractGeocode({
+		inputPath: geoPbf,
+		outDir: outWave,
+		quiet: true,
+		resume: false,
+		datasets: parseDatasets('logradouro'),
+		// 1 street por onda → pelo menos uma wave se houver ≥1 way
+		waveStreets: 1,
+		waveNodes: 2
+	});
+	assert.equal(result.error, null);
+	assert.ok(result.counts.logradouro >= 1);
+	assert.ok(result.counts.streetWaves >= 1, 'deve ter feito ao menos 1 wave');
+	assert.ok(result.counts.logradouroNoGeom === 0 || result.counts.logradouroNoGeom == null);
+	rmrf(outWave);
+});
+
+test('parseCli aceita --uf --region --wave-nodes', function () {
+	var { parseCli } = require('../extract-geocode-pbf');
+	var opts = parseCli([
+		'node',
+		'extract-geocode-pbf.js',
+		'x.pbf',
+		'--out=y',
+		'--uf=SP,MG',
+		'--region=sul',
+		'--wave-nodes=1000',
+		'--wave-streets=50'
+	]);
+	assert.ok(opts.ufAllow.SP && opts.ufAllow.MG && opts.ufAllow.RS);
+	assert.equal(opts.waveNodes, 1000);
+	assert.equal(opts.waveStreets, 50);
+});
+
+test('soft-stop via onControl para no blob atual (não completa o extract)', async function () {
+	ensureGeocodePbf();
+	var outStop = path.join(fixtures, 'geocode-mini-out-stop');
+	rmrf(outStop);
+	var t0 = Date.now();
+	var result = await runExtractGeocode({
+		inputPath: geoPbf,
+		outDir: outStop,
+		quiet: true,
+		resume: false,
+		datasets: parseDatasets('logradouro'),
+		// forçaria várias waves se rodasse até o fim
+		waveStreets: 1,
+		waveNodes: 2,
+		onControl: function (c) {
+			// cancela assim que o runner expõe o controle (antes/durante o 1º blob)
+			c.softStop('test');
+		}
+	});
+	var elapsed = Date.now() - t0;
+	assert.equal(result.stoppedEarly, true);
+	assert.equal(result.stopReason, 'soft-stop');
+	assert.ok(elapsed < 5000, 'soft-stop deve ser rápido, levou ' + elapsed + 'ms');
+	rmrf(outStop);
 });

@@ -23,6 +23,31 @@ var TIPOS = {
 /** Conectores que sobram na frente depois de tirar o tipo ("da moenda"). */
 var LIGA = { de: 1, da: 1, do: 1, das: 1, dos: 1, e: 1, a: 1, o: 1, em: 1, no: 1, na: 1 };
 
+/**
+ * Títulos / honrarias no início do núcleo (depois do tipo).
+ * DNE costuma omitir; OSM grava por extenso ou abreviado.
+ * Entrada já normalizada (sem acento). Não inclui santo/são — colidem com topônimos.
+ */
+var TITULOS = {
+	doutor: 1, doutora: 1, dr: 1, dra: 1,
+	professor: 1, professora: 1, prof: 1,
+	engenheiro: 1, engenheira: 1, eng: 1,
+	desembargador: 1, desembargadora: 1,
+	senador: 1, senadora: 1,
+	deputado: 1, deputada: 1,
+	ministro: 1, ministra: 1,
+	presidente: 1,
+	padre: 1, frei: 1, monsenhor: 1,
+	marechal: 1, general: 1, brigadeiro: 1,
+	coronel: 1, major: 1, capitao: 1, tenente: 1, almirante: 1,
+	comendador: 1, comendadora: 1,
+	vereador: 1, vereadora: 1,
+	prefeito: 1, prefeita: 1,
+	governador: 1, governadora: 1
+	// nobreza (barão, visconde, …) fica de fora: é parte do nome, não honraria
+	// opcional — Barão de Piracicaba ≠ de Piracicaba
+};
+
 /** `TLO_TX` do DNE que designam área, não linha. */
 var TLO_AREA = {
 	praca: 1, largo: 1, parque: 1, jardim: 1, vila: 1, area: 1
@@ -42,6 +67,29 @@ function coreName(norm) {
 	var i = 0;
 	while (i < t.length - 1 && (TIPOS[t[i]] === 1 || LIGA[t[i]] === 1)) i++;
 	return t.slice(i).join(' ');
+}
+
+/**
+ * Remove títulos do início do núcleo.
+ * "doutor olimpio carr ribeiro" → "olimpio carr ribeiro".
+ * Nunca devolve vazio — nome que é só título volta inteiro.
+ * Devolve também os tokens removidos (auditoria).
+ */
+function stripTitulos(norm) {
+	if (!norm) return { bare: '', removed: [] };
+	var t = norm.split(' ');
+	var i = 0;
+	var removed = [];
+	while (i < t.length - 1 && TITULOS[t[i]] === 1) {
+		removed.push(t[i]);
+		i++;
+	}
+	return { bare: t.slice(i).join(' '), removed: removed };
+}
+
+/** Núcleo sem tipo e sem títulos de honraria. */
+function coreBare(norm) {
+	return stripTitulos(coreName(norm)).bare;
 }
 
 /**
@@ -90,10 +138,13 @@ function isAreaKind(kind) {
 
 module.exports = {
 	coreName: coreName,
+	stripTitulos: stripTitulos,
+	coreBare: coreBare,
 	phoneticKey: phoneticKey,
 	isAreaTlo: isAreaTlo,
 	isAreaKind: isAreaKind,
 	TIPOS: TIPOS,
+	TITULOS: TITULOS,
 	TLO_AREA: TLO_AREA,
 	KIND_AREA: KIND_AREA
 };

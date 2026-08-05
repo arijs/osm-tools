@@ -10,8 +10,17 @@
  *   --node-cache=N   (default 500000)
  *   --shard-lines=N  (0=flat .TXT; N>0 → OSM_KEY/{N}-linhas/000001.txt + MANIFEST)
  *   --shard-datasets=logradouro,addr  (default when shard-lines>0)
+ *   --uf=SP,RJ       (só estas UFs; reduz saída; combina com --region)
+ *   --region=norte|nordeste|centro-oeste|sudeste|sul
+ *   --wave-nodes=N   (default 8e6; flush pass2 antes do limite do Set do V8)
+ *   --wave-streets=N (default 150000 pending logradouros por onda)
  *
- * Soft-stop: Ctrl+C (finish current blob); 2nd hard-stop.
+ * Cancel (Ctrl+C): 1º soft-stop no fim do blob (sem novas waves);
+ * 2º hard-stop (+ exit forçado em 2s); 3º process.exit(130).
+ * Blobs via forEachBlobAsync para o SIGINT não ficar preso dentro da wave.
+ *
+ * Brasil (~2GB): o two-pass agenda todos os nós de logradouro num Set; V8 estoura
+ * (~16M). Waves + fatias --uf/--region evitam RangeError: Set maximum size exceeded.
  */
 
 var fs = require('fs');
@@ -26,6 +35,9 @@ var txtAt = require('./txt-at-writer');
 
 var DEFAULT_SOFT_STOP_MS = 30000;
 var DEFAULT_NODE_CACHE = 500000;
+/** Abaixo do teto ~16.7M do Set no V8; margem para admin + crescimento. */
+var DEFAULT_WAVE_NODES = 8000000;
+var DEFAULT_WAVE_STREETS = 150000;
 
 var PLACE_STATE = { state: 1 };
 var PLACE_MUNI = { city: 1, municipality: 1, town: 1 };
@@ -257,6 +269,22 @@ function wantDataset(set, name) {
 	return set[name] === true;
 }
 
+/** Keep feature when no UF filter, or UF/ponto está na fatia pedida. */
+function keepByUfFilter(ctx, uf, lat, lon) {
+	return ufBr.passesUfFilter(ctx.ufAllow, uf, lat, lon);
+}
+
+function latLonFromGeom(g) {
+	if (!g) return { lat: null, lon: null };
+	var lat = g.lat === '' || g.lat == null ? null : Number(g.lat);
+	var lon = g.lng === '' || g.lng == null ? null : Number(g.lng);
+	if ((lat == null || !isFinite(lat)) && g.lat_min !== '' && g.lat_max !== '') {
+		lat = (Number(g.lat_min) + Number(g.lat_max)) / 2;
+		lon = (Number(g.lng_min) + Number(g.lng_max)) / 2;
+	}
+	return { lat: lat, lon: lon };
+}
+
 /**
  * Process one primitive; write rows via ctx.writer
  */
@@ -290,22 +318,24 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 				ibge: ibgeInfo.ibge
 			});
 			if (uf === 'XX') uf = ufBr.normalizeUfToken(tags.ref) || uf;
-			ctx.writer.write('OSM_ESTADO', [
-				'node',
-				id,
-				uf === 'XX' ? '' : uf,
-				name,
-				nn,
-				g.lat,
-				g.lng,
-				g.lat_min,
-				g.lat_max,
-				g.lng_min,
-				g.lng_max,
-				admin,
-				place
-			]);
-			ctx.stats.estado++;
+			if (keepByUfFilter(ctx, uf, lat, lon)) {
+				ctx.writer.write('OSM_ESTADO', [
+					'node',
+					id,
+					uf === 'XX' ? '' : uf,
+					name,
+					nn,
+					g.lat,
+					g.lng,
+					g.lat_min,
+					g.lat_max,
+					g.lng_min,
+					g.lng_max,
+					admin,
+					place
+				]);
+				ctx.stats.estado++;
+			}
 		}
 	}
 
@@ -323,48 +353,52 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 				lng: lon,
 				ibge: ibgeMun || ibgeInfo.ibge
 			});
-			ctx.writer.write('OSM_MUNICIPIO', [
-				'node',
-				id,
-				ibgeMun,
-				ufM === 'XX' ? '' : ufM,
-				name,
-				nn,
-				g.lat,
-				g.lng,
-				g.lat_min,
-				g.lat_max,
-				g.lng_min,
-				g.lng_max,
-				admin,
-				place,
-				ibgeMun ? ibgeInfo.source_tag : ''
-			]);
-			ctx.stats.municipio++;
+			if (keepByUfFilter(ctx, ufM, lat, lon)) {
+				ctx.writer.write('OSM_MUNICIPIO', [
+					'node',
+					id,
+					ibgeMun,
+					ufM === 'XX' ? '' : ufM,
+					name,
+					nn,
+					g.lat,
+					g.lng,
+					g.lat_min,
+					g.lat_max,
+					g.lng_min,
+					g.lng_max,
+					admin,
+					place,
+					ibgeMun ? ibgeInfo.source_tag : ''
+				]);
+				ctx.stats.municipio++;
+			}
 		}
 	}
 
 	if (wantDataset(ctx.datasets, 'bairro') && PLACE_BAIRRO[place]) {
 		var city = tags['addr:city'] || tags['is_in:city'] || tags['is_in'] || '';
 		var ufB = ufBr.resolveUf({ tags: tags, lat: lat, lng: lon });
-		ctx.writer.write('OSM_BAIRRO', [
-			'node',
-			id,
-			name,
-			nn,
-			ufB === 'XX' ? '' : ufB,
-			city,
-			nameNorm(city),
-			ibgeInfo.ibge,
-			g.lat,
-			g.lng,
-			g.lat_min,
-			g.lat_max,
-			g.lng_min,
-			g.lng_max,
-			place
-		]);
-		ctx.stats.bairro++;
+		if (keepByUfFilter(ctx, ufB, lat, lon)) {
+			ctx.writer.write('OSM_BAIRRO', [
+				'node',
+				id,
+				name,
+				nn,
+				ufB === 'XX' ? '' : ufB,
+				city,
+				nameNorm(city),
+				ibgeInfo.ibge,
+				g.lat,
+				g.lng,
+				g.lat_min,
+				g.lat_max,
+				g.lng_min,
+				g.lng_max,
+				place
+			]);
+			ctx.stats.bairro++;
+		}
 	}
 
 	// Praça mapeada como nó: ponto exato, sem extensão (bbox degenerada).
@@ -376,20 +410,22 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 	if (wantDataset(ctx.datasets, 'addr') && tags['addr:street']) {
 		var street = tags['addr:street'];
 		var ufA = ufBr.resolveUf({ tags: tags, lat: lat, lng: lon });
-		var base = 'OSM_ADDR_POINT_' + (ufA === 'XX' ? 'XX' : ufA);
-		ctx.writer.write(base, [
-			id,
-			lat,
-			lon,
-			street,
-			nameNorm(street),
-			tags['addr:housenumber'] || '',
-			tags['addr:city'] || '',
-			tags['addr:suburb'] || '',
-			tags['addr:postcode'] || '',
-			name
-		]);
-		ctx.stats.addr++;
+		if (keepByUfFilter(ctx, ufA, lat, lon)) {
+			var base = 'OSM_ADDR_POINT_' + (ufA === 'XX' ? 'XX' : ufA);
+			ctx.writer.write(base, [
+				id,
+				lat,
+				lon,
+				street,
+				nameNorm(street),
+				tags['addr:housenumber'] || '',
+				tags['addr:city'] || '',
+				tags['addr:suburb'] || '',
+				tags['addr:postcode'] || '',
+				name
+			]);
+			ctx.stats.addr++;
+		}
 	}
 }
 
@@ -405,21 +441,27 @@ function processFeatureWay(ctx, way) {
 	var nn = nameNorm(name);
 
 	if (wantDataset(ctx.datasets, 'logradouro') && logradouroKind(tags) && name) {
-		if (ctx.twoPassStreets) {
-			// Pass 1: só agenda; coords resolvidas na pass 2
-			for (var ri = 0; ri < nodeIds.length; ri++) {
-				ctx.neededNodeIds.add(nodeIds[ri]);
+		// Early reject se tags já apontam UF fora da fatia (economiza agenda).
+		if (!ufBr.tagsDisallowedByFilter(ctx.ufAllow, tags, ibgeInfo.ibge)) {
+			if (ctx.twoPassStreets) {
+				// Pass 1: só agenda; coords resolvidas na pass 2 (ou wave flush)
+				for (var ri = 0; ri < nodeIds.length; ri++) {
+					ctx.neededNodeIds.add(nodeIds[ri]);
+				}
+				ctx.pendingStreets.push({
+					id: way.id,
+					tags: tags,
+					nodeIds: nodeIds,
+					name: name,
+					nn: nn
+				});
+				ctx.stats.logradouroPending++;
+			} else {
+				writeLogradouroRow(ctx, 'way', way.id, tags, name, nn, g, ibgeInfo);
 			}
-			ctx.pendingStreets.push({
-				id: way.id,
-				tags: tags,
-				nodeIds: nodeIds,
-				name: name,
-				nn: nn
-			});
-			ctx.stats.logradouroPending++;
 		} else {
-			writeLogradouroRow(ctx, 'way', way.id, tags, name, nn, g, ibgeInfo);
+			ctx.stats.logradouroSkippedFilter =
+				(ctx.stats.logradouroSkippedFilter || 0) + 1;
 		}
 	}
 
@@ -431,22 +473,25 @@ function processFeatureWay(ctx, way) {
 				lng: g.lng === '' ? null : g.lng,
 				ibge: ibgeInfo.ibge
 			});
-			ctx.writer.write('OSM_ESTADO', [
-				'way',
-				way.id,
-				ufE === 'XX' ? '' : ufE,
-				name,
-				nn,
-				g.lat,
-				g.lng,
-				g.lat_min,
-				g.lat_max,
-				g.lng_min,
-				g.lng_max,
-				admin,
-				place
-			]);
-			ctx.stats.estado++;
+			var llE = latLonFromGeom(g);
+			if (keepByUfFilter(ctx, ufE, llE.lat, llE.lon)) {
+				ctx.writer.write('OSM_ESTADO', [
+					'way',
+					way.id,
+					ufE === 'XX' ? '' : ufE,
+					name,
+					nn,
+					g.lat,
+					g.lng,
+					g.lat_min,
+					g.lat_max,
+					g.lng_min,
+					g.lng_max,
+					admin,
+					place
+				]);
+				ctx.stats.estado++;
+			}
 		}
 	}
 
@@ -462,24 +507,27 @@ function processFeatureWay(ctx, way) {
 				lng: g.lng === '' ? null : g.lng,
 				ibge: ibgeMunW || ibgeInfo.ibge
 			});
-			ctx.writer.write('OSM_MUNICIPIO', [
-				'way',
-				way.id,
-				ibgeMunW,
-				ufM === 'XX' ? '' : ufM,
-				name,
-				nn,
-				g.lat,
-				g.lng,
-				g.lat_min,
-				g.lat_max,
-				g.lng_min,
-				g.lng_max,
-				admin,
-				place,
-				ibgeMunW ? ibgeInfo.source_tag : ''
-			]);
-			ctx.stats.municipio++;
+			var llM = latLonFromGeom(g);
+			if (keepByUfFilter(ctx, ufM, llM.lat, llM.lon)) {
+				ctx.writer.write('OSM_MUNICIPIO', [
+					'way',
+					way.id,
+					ibgeMunW,
+					ufM === 'XX' ? '' : ufM,
+					name,
+					nn,
+					g.lat,
+					g.lng,
+					g.lat_min,
+					g.lat_max,
+					g.lng_min,
+					g.lng_max,
+					admin,
+					place,
+					ibgeMunW ? ibgeInfo.source_tag : ''
+				]);
+				ctx.stats.municipio++;
+			}
 		}
 	}
 
@@ -490,24 +538,27 @@ function processFeatureWay(ctx, way) {
 			lat: g.lat === '' ? null : g.lat,
 			lng: g.lng === '' ? null : g.lng
 		});
-		ctx.writer.write('OSM_BAIRRO', [
-			'way',
-			way.id,
-			name,
-			nn,
-			ufB === 'XX' ? '' : ufB,
-			city,
-			nameNorm(city),
-			ibgeInfo.ibge,
-			g.lat,
-			g.lng,
-			g.lat_min,
-			g.lat_max,
-			g.lng_min,
-			g.lng_max,
-			place
-		]);
-		ctx.stats.bairro++;
+		var llB = latLonFromGeom(g);
+		if (keepByUfFilter(ctx, ufB, llB.lat, llB.lon)) {
+			ctx.writer.write('OSM_BAIRRO', [
+				'way',
+				way.id,
+				name,
+				nn,
+				ufB === 'XX' ? '' : ufB,
+				city,
+				nameNorm(city),
+				ibgeInfo.ibge,
+				g.lat,
+				g.lng,
+				g.lat_min,
+				g.lat_max,
+				g.lng_min,
+				g.lng_max,
+				place
+			]);
+			ctx.stats.bairro++;
+		}
 	}
 }
 
@@ -529,6 +580,12 @@ function writeLogradouroRow(ctx, osmType, wayId, tags, name, nn, g, ibgeInfo) {
 		lng_max: g.lng_max === '' ? null : g.lng_max,
 		ibge: ibgeInfo && ibgeInfo.ibge
 	});
+	var ll = latLonFromGeom(g);
+	if (!keepByUfFilter(ctx, uf, ll.lat, ll.lon)) {
+		ctx.stats.logradouroSkippedFilter =
+			(ctx.stats.logradouroSkippedFilter || 0) + 1;
+		return;
+	}
 	var base = 'OSM_LOGRADOURO_' + (uf || 'XX');
 	var alts = altNames(tags, name);
 	ctx.writer.write(base, [
@@ -610,22 +667,25 @@ function processFeatureRelation(ctx, rel) {
 				lng: g.lng === '' ? null : g.lng,
 				ibge: ibgeInfo.ibge
 			});
-			ctx.writer.write('OSM_ESTADO', [
-				'relation',
-				rel.id,
-				ufE === 'XX' ? '' : ufE,
-				name,
-				nn,
-				g.lat,
-				g.lng,
-				g.lat_min,
-				g.lat_max,
-				g.lng_min,
-				g.lng_max,
-				admin,
-				place
-			]);
-			ctx.stats.estado++;
+			var llE = latLonFromGeom(g);
+			if (keepByUfFilter(ctx, ufE, llE.lat, llE.lon)) {
+				ctx.writer.write('OSM_ESTADO', [
+					'relation',
+					rel.id,
+					ufE === 'XX' ? '' : ufE,
+					name,
+					nn,
+					g.lat,
+					g.lng,
+					g.lat_min,
+					g.lat_max,
+					g.lng_min,
+					g.lng_max,
+					admin,
+					place
+				]);
+				ctx.stats.estado++;
+			}
 		}
 	}
 
@@ -635,14 +695,18 @@ function processFeatureRelation(ctx, rel) {
 			(boundary === 'administrative' && admin === '8') ||
 			(ibgeMun && name && admin === '8');
 		if (isMuniRel) {
-			// Two-pass: se não achou admin_centre no cache, agenda node ids
-			if (
+			// Early reject por tags/IBGE quando há fatia UF
+			if (ufBr.tagsDisallowedByFilter(ctx.ufAllow, tags, ibgeMun || ibgeInfo.ibge)) {
+				ctx.stats.municipioSkippedFilter =
+					(ctx.stats.municipioSkippedFilter || 0) + 1;
+			} else if (
 				g.lat === '' &&
 				centreIds.length &&
 				ctx.twoPassGeometry
 			) {
+				// Two-pass: agenda admin_centre em set separado (não entra no wave de ruas)
 				for (var ci = 0; ci < centreIds.length; ci++) {
-					ctx.neededNodeIds.add(centreIds[ci]);
+					ctx.neededAdminNodeIds.add(centreIds[ci]);
 				}
 				ctx.pendingAdminMuni.push({
 					id: rel.id,
@@ -669,24 +733,27 @@ function processFeatureRelation(ctx, rel) {
 			lat: g.lat === '' ? null : g.lat,
 			lng: g.lng === '' ? null : g.lng
 		});
-		ctx.writer.write('OSM_BAIRRO', [
-			'relation',
-			rel.id,
-			name,
-			nn,
-			ufB === 'XX' ? '' : ufB,
-			city,
-			nameNorm(city),
-			ibgeMun,
-			g.lat,
-			g.lng,
-			g.lat_min,
-			g.lat_max,
-			g.lng_min,
-			g.lng_max,
-			place
-		]);
-		ctx.stats.bairro++;
+		var llB = latLonFromGeom(g);
+		if (keepByUfFilter(ctx, ufB, llB.lat, llB.lon)) {
+			ctx.writer.write('OSM_BAIRRO', [
+				'relation',
+				rel.id,
+				name,
+				nn,
+				ufB === 'XX' ? '' : ufB,
+				city,
+				nameNorm(city),
+				ibgeMun,
+				g.lat,
+				g.lng,
+				g.lat_min,
+				g.lat_max,
+				g.lng_min,
+				g.lng_max,
+				place
+			]);
+			ctx.stats.bairro++;
+		}
 	}
 }
 
@@ -697,6 +764,12 @@ function writeMunicipioRow(ctx, osmType, osmId, tags, name, nn, g, ibgeMun, sour
 		lng: g.lng === '' ? null : g.lng,
 		ibge: ibgeMun
 	});
+	var ll = latLonFromGeom(g);
+	if (!keepByUfFilter(ctx, ufM, ll.lat, ll.lon)) {
+		ctx.stats.municipioSkippedFilter =
+			(ctx.stats.municipioSkippedFilter || 0) + 1;
+		return;
+	}
 	ctx.writer.write('OSM_MUNICIPIO', [
 		osmType,
 		osmId,
@@ -819,19 +892,25 @@ function processPrimitiveBlock(block, ctx) {
 	}
 }
 
-/** Pass 2: only harvest coordinates for node ids needed by pending streets. */
-function harvestStreetNodes(block, neededNodeIds, streetCoords, stats) {
+/**
+ * Pass 2: harvest coordinates for node ids in neededA (and optional neededB).
+ * neededB: admin_centre ids (não entram no wave de logradouro).
+ */
+function harvestStreetNodes(block, neededA, streetCoords, stats, neededB) {
 	var strings = stringTableToArray(block.stringtable);
 	var granularity = block.granularity || 100;
 	var latOffset = block.lat_offset || 0;
 	var lonOffset = block.lon_offset || 0;
 	var groups = block.primitivegroup || [];
+	function want(id) {
+		return neededA.has(id) || (neededB && neededB.has(id));
+	}
 	for (var g = 0; g < groups.length; g++) {
 		var pg = groups[g];
 		if (pg.nodes && pg.nodes.length) {
 			for (var ni = 0; ni < pg.nodes.length; ni++) {
 				var nd = pg.nodes[ni];
-				if (!neededNodeIds.has(nd.id)) continue;
+				if (!want(nd.id)) continue;
 				streetCoords.set(nd.id, [
 					decodeCoord(nd.lat, granularity, latOffset),
 					decodeCoord(nd.lon, granularity, lonOffset)
@@ -847,13 +926,121 @@ function harvestStreetNodes(block, neededNodeIds, streetCoords, stats) {
 				latOffset,
 				lonOffset,
 				function (id, lat, lon) {
-					if (!neededNodeIds.has(id)) return;
+					if (!want(id)) return;
 					streetCoords.set(id, [lat, lon]);
 					stats.streetNodesResolved++;
 				}
 			);
 		}
 	}
+}
+
+/**
+ * Mid-pass flush: resolve e grava logradouros pendentes, libera o Set.
+ * Evita RangeError: Set maximum size exceeded no Brasil inteiro.
+ * Async: cede o event loop entre blobs para Ctrl+C funcionar durante a wave.
+ * @returns {Promise<{ stopped: boolean }>}
+ */
+function flushStreetWave(ctx, inputPath, quiet, shouldStop) {
+	if (!ctx.pendingStreets.length || !ctx.neededNodeIds.size) {
+		return Promise.resolve({ stopped: false });
+	}
+	var waveNum = (ctx.stats.streetWaves || 0) + 1;
+	if (!quiet) {
+		console.error(
+			'\nWave ' +
+				waveNum +
+				': resolvendo ' +
+				ctx.neededNodeIds.size +
+				' nós / ' +
+				ctx.pendingStreets.length +
+				' logradouros...'
+		);
+	}
+	var stopped = false;
+	var lastPrint = 0;
+	var target = ctx.neededNodeIds.size;
+	return pbfReader
+		.forEachBlobAsync(inputPath, { startOffset: 0, startBlobIndex: 0 }, function (
+			blob
+		) {
+			// Checa stop **antes** de processar — responde rápido ao Ctrl+C
+			if (shouldStop && shouldStop()) {
+				stopped = true;
+				return 'stop';
+			}
+			if (blob.type === 'OSMData') {
+				var pb = osmformat.PrimitiveBlock.read(new Pbf(blob.data));
+				harvestStreetNodes(pb, ctx.neededNodeIds, ctx.streetCoords, ctx.stats);
+				// Nós vêm antes das ways no PBF: se já temos tudo, pode parar.
+				if (ctx.streetCoords.size >= target) return 'stop';
+			}
+			if (!quiet) {
+				var now = Date.now();
+				if (now - lastPrint > 400) {
+					lastPrint = now;
+					process.stdout.write(
+						'\r wave' +
+							waveNum +
+							' blob ' +
+							blob.blobIndex +
+							' resolved=' +
+							ctx.streetCoords.size +
+							'/' +
+							target +
+							'   '
+					);
+				}
+			}
+			if (shouldStop && shouldStop()) {
+				stopped = true;
+				return 'stop';
+			}
+		})
+		.then(function () {
+			if (!quiet) process.stdout.write('\n');
+			if (stopped) {
+				// Wave incompleta: não emite (coords parciais). Caller trata cancel.
+				if (!quiet) {
+					console.error(
+						'Wave ' + waveNum + ' cancelada — logradouros desta onda não gravados.'
+					);
+				}
+				return { stopped: true };
+			}
+			emitPendingStreets(ctx);
+			ctx.neededNodeIds = new Set();
+			ctx.streetCoords = new Map();
+			ctx.stats.streetWaves = waveNum;
+			return { stopped: false };
+		});
+}
+
+function shouldFlushStreetWave(ctx, waveNodes, waveStreets) {
+	return (
+		ctx.twoPassStreets &&
+		(ctx.neededNodeIds.size >= waveNodes ||
+			ctx.pendingStreets.length >= waveStreets)
+	);
+}
+
+/** Linha de resumo final no stderr (datasets gravados + waves). */
+function formatExtractSummary(stats) {
+	stats = stats || {};
+	var parts = [];
+	if (stats.estado) parts.push('Estados: ' + stats.estado);
+	parts.push('Municípios: ' + (stats.municipio || 0));
+	parts.push('Bairros: ' + (stats.bairro || 0));
+	parts.push(
+		'Logradouros: ' +
+			(stats.logradouro || 0) +
+			' (sem geom: ' +
+			(stats.logradouroNoGeom || 0) +
+			')'
+	);
+	if (stats.addr) parts.push('Addr: ' + stats.addr);
+	if (stats.streetWaves) parts.push('waves=' + stats.streetWaves);
+	return parts.join(' | ');
 }
 
 function parseDatasets(str) {
@@ -934,6 +1121,9 @@ function writeReadmeColunas(outDir, opts) {
  * @param {boolean} [options.resume]
  * @param {number} [options.nodeCacheMax]
  * @param {number} [options.softStopMaxMs]
+ * @param {object|null} [options.ufAllow] map UF→true from parseUfFilter
+ * @param {number} [options.waveNodes]
+ * @param {number} [options.waveStreets]
  * @param {function} [options.onControl]
  */
 function runExtractGeocode(options) {
@@ -964,6 +1154,14 @@ function runExtractGeocode(options) {
 		// default: fatia só volumes grandes
 		shardOnly = ['OSM_LOGRADOURO', 'OSM_ADDR_POINT', 'OSM_BAIRRO'];
 	}
+	var ufAllow =
+		options.ufAllow ||
+		ufBr.parseUfFilter(options.uf || '', options.region || '') ||
+		null;
+	var waveNodes =
+		options.waveNodes > 0 ? options.waveNodes | 0 : DEFAULT_WAVE_NODES;
+	var waveStreets =
+		options.waveStreets > 0 ? options.waveStreets | 0 : DEFAULT_WAVE_STREETS;
 	var statsPath = path.join(outDir, 'extract-checkpoint.json');
 
 	return new Promise(function (resolve, reject) {
@@ -991,11 +1189,9 @@ function runExtractGeocode(options) {
 			softStopDeadline = Date.now() + softStopMaxMs;
 			if (!quiet) {
 				console.error(
-					'\nSoft-stop extract: fim do blob atual (max ' +
-						Math.round(softStopMaxMs / 1000) +
-						's)' +
+					'\nSoft-stop: parando no fim do blob atual (sem novas waves)' +
 						(reason ? ' — ' + reason : '') +
-						'\n'
+						'.\nCtrl+C de novo força saída imediata (descarta pendentes).\n'
 				);
 			}
 		}
@@ -1003,7 +1199,11 @@ function runExtractGeocode(options) {
 			hardStopRequested = true;
 			softStopRequested = true;
 			softStopDeadline = Date.now();
-			if (!quiet) console.error('\nHard-stop extract...\n');
+			if (!quiet) {
+				console.error(
+					'\nHard-stop: cancelando agora (próximo blob). Ctrl+C outra vez = exit forçado.\n'
+				);
+			}
 		}
 		if (typeof options.onControl === 'function') {
 			options.onControl({
@@ -1057,9 +1257,11 @@ function runExtractGeocode(options) {
 			datasets: datasets,
 			twoPassStreets: twoPassStreets,
 			twoPassGeometry: twoPassGeometry,
+			ufAllow: ufAllow,
 			pendingStreets: [],
 			pendingAdminMuni: [],
 			neededNodeIds: new Set(),
+			neededAdminNodeIds: new Set(),
 			streetCoords: new Map(),
 			nodeCache: createNodeCache(options.nodeCacheMax || DEFAULT_NODE_CACHE),
 			stats: Object.assign(
@@ -1070,11 +1272,14 @@ function runExtractGeocode(options) {
 					estado: 0,
 					municipio: 0,
 					municipioPending: 0,
+					municipioSkippedFilter: 0,
 					bairro: 0,
 					logradouro: 0,
 					logradouroPending: 0,
 					logradouroNoGeom: 0,
+					logradouroSkippedFilter: 0,
 					streetNodesResolved: 0,
+					streetWaves: 0,
 					addr: 0
 				},
 				// não misturar contagens de run anterior no two-pass
@@ -1100,10 +1305,22 @@ function runExtractGeocode(options) {
 						})
 						.join(',')
 			);
+			if (ufAllow) {
+				console.error('Filtro UF: ' + ufBr.ufAllowList(ufAllow).join(','));
+			}
 			if (twoPassGeometry) {
 				console.error(
 					'Two-pass geometry: pass1 agenda (logradouro + admin_centre), pass2 resolve nós'
 				);
+				if (twoPassStreets) {
+					console.error(
+						'Waves: flush se neededNodes>=' +
+							waveNodes +
+							' ou pendingStreets>=' +
+							waveStreets +
+							' (evita Set max size)'
+					);
+				}
 			}
 			if (shardLines > 0) {
 				console.error(
@@ -1138,6 +1355,10 @@ function runExtractGeocode(options) {
 					ctx.stats.municipio +
 					' log=' +
 					ctx.stats.logradouro +
+					' pend=' +
+					ctx.pendingStreets.length +
+					' need=' +
+					ctx.neededNodeIds.size +
 					' cache=' +
 					ctx.nodeCache.size +
 					'   '
@@ -1145,9 +1366,16 @@ function runExtractGeocode(options) {
 		}
 
 		function shouldStop() {
+			// Soft-stop: para no próximo check de blob (não espera 30s de trabalho extra).
+			// softStopDeadline fica só como safety se algo travar sem checar.
 			if (hardStopRequested) return true;
 			if (!softStopRequested) return false;
-			return Date.now() >= softStopDeadline;
+			return true;
+		}
+
+		function markStopped() {
+			stoppedEarly = true;
+			stopReason = hardStopRequested ? 'hard-stop' : 'soft-stop';
 		}
 
 		function headerBBoxToDegrees(bbox) {
@@ -1160,130 +1388,150 @@ function runExtractGeocode(options) {
 			};
 		}
 
-		try {
-			pbfReader.forEachBlob(
-				inputPath,
-				{ startOffset: startOffset, startBlobIndex: startBlobIndex },
-				function (blob) {
-					bytesReadEstimate = blob.nextOffset;
-					if (blob.type === 'OSMHeader') {
-						var hb = osmformat.HeaderBlock.read(new Pbf(blob.data));
-						headerInfo = {
-							bbox: headerBBoxToDegrees(hb.bbox),
-							writingprogram: hb.writingprogram || '',
-							source: hb.source || ''
-						};
-					} else if (blob.type === 'OSMData') {
-						var pb = osmformat.PrimitiveBlock.read(new Pbf(blob.data));
-						processPrimitiveBlock(pb, ctx);
-						dataBlobs++;
-					}
-					printProgress(blob.blobIndex, false);
-					if (shouldStop()) {
-						stoppedEarly = true;
-						stopReason = hardStopRequested ? 'hard-stop' : 'soft-stop';
-						return 'stop';
-					}
-				}
-			);
-		} catch (err) {
-			return fail(err);
-		}
-
-		printProgress(startBlobIndex + dataBlobs, true);
-		if (!quiet) process.stdout.write('\n');
-
-		// Pass 2: coords para logradouros e admin_centre de municípios
-		var needPass2 =
-			twoPassGeometry &&
-			!stoppedEarly &&
-			ctx.neededNodeIds.size > 0 &&
-			(ctx.pendingStreets.length > 0 || ctx.pendingAdminMuni.length > 0);
-		if (needPass2) {
-			if (!quiet) {
-				console.error(
-					'Pass 2/2: resolvendo ' +
-						ctx.neededNodeIds.size +
-						' nós (logradouro=' +
-						ctx.pendingStreets.length +
-						' admin_muni=' +
-						ctx.pendingAdminMuni.length +
-						')...'
-				);
-			}
+		// Async: forEachBlobAsync cede o event loop entre blobs → Ctrl+C chega
+		// no meio de waves/pass2 (o loop síncrono engolia o SIGINT até o fim).
+		(async function runBody() {
 			try {
-				var lastPrint2 = 0;
-				pbfReader.forEachBlob(inputPath, { startOffset: 0, startBlobIndex: 0 }, function (
-					blob
-				) {
-					if (blob.type === 'OSMData') {
-						var pb2 = osmformat.PrimitiveBlock.read(new Pbf(blob.data));
-						harvestStreetNodes(
-							pb2,
-							ctx.neededNodeIds,
-							ctx.streetCoords,
-							ctx.stats
-						);
-					}
-					if (!quiet) {
-						var now2 = Date.now();
-						if (now2 - lastPrint2 > 400) {
-							lastPrint2 = now2;
-							process.stdout.write(
-								'\r pass2 blob ' +
-									blob.blobIndex +
-									' resolved=' +
-									ctx.streetCoords.size +
-									'/' +
-									ctx.neededNodeIds.size +
-									'   '
-							);
+				await pbfReader.forEachBlobAsync(
+					inputPath,
+					{ startOffset: startOffset, startBlobIndex: startBlobIndex },
+					async function (blob) {
+						if (shouldStop()) {
+							markStopped();
+							return 'stop';
+						}
+						bytesReadEstimate = blob.nextOffset;
+						if (blob.type === 'OSMHeader') {
+							var hb = osmformat.HeaderBlock.read(new Pbf(blob.data));
+							headerInfo = {
+								bbox: headerBBoxToDegrees(hb.bbox),
+								writingprogram: hb.writingprogram || '',
+								source: hb.source || ''
+							};
+						} else if (blob.type === 'OSMData') {
+							var pb = osmformat.PrimitiveBlock.read(new Pbf(blob.data));
+							processPrimitiveBlock(pb, ctx);
+							dataBlobs++;
+							// Nunca inicia wave depois de cancelar — era o que prendia o Ctrl+C.
+							if (
+								!shouldStop() &&
+								shouldFlushStreetWave(ctx, waveNodes, waveStreets)
+							) {
+								var waveRes = await flushStreetWave(
+									ctx,
+									inputPath,
+									quiet,
+									shouldStop
+								);
+								if (waveRes.stopped) {
+									markStopped();
+									return 'stop';
+								}
+							}
+						}
+						printProgress(blob.blobIndex, false);
+						if (shouldStop()) {
+							markStopped();
+							return 'stop';
 						}
 					}
-					if (shouldStop()) {
-						stoppedEarly = true;
-						stopReason = hardStopRequested ? 'hard-stop' : 'soft-stop';
-						return 'stop';
-					}
-				});
+				);
+
+				printProgress(startBlobIndex + dataBlobs, true);
 				if (!quiet) process.stdout.write('\n');
-				if (!stoppedEarly) {
-					if (ctx.pendingAdminMuni.length) {
-						emitPendingAdminMuni(ctx);
-					}
-					if (ctx.pendingStreets.length) {
-						emitPendingStreets(ctx);
-					}
+
+				// Pass 2 final: resto de logradouros + admin_centre de municípios
+				var needPass2 =
+					twoPassGeometry &&
+					!stoppedEarly &&
+					(ctx.pendingStreets.length > 0 || ctx.pendingAdminMuni.length > 0);
+				if (needPass2) {
+					var targetNeed =
+						ctx.neededNodeIds.size + ctx.neededAdminNodeIds.size;
 					if (!quiet) {
 						console.error(
-							'Municípios: ' +
-								ctx.stats.municipio +
-								' | Logradouros: ' +
-								ctx.stats.logradouro +
-								' (sem geom: ' +
-								ctx.stats.logradouroNoGeom +
-								')'
+							'Pass 2/2: resolvendo ' +
+								targetNeed +
+								' nós (logradouro=' +
+								ctx.pendingStreets.length +
+								' admin_muni=' +
+								ctx.pendingAdminMuni.length +
+								(ctx.stats.streetWaves
+									? ' waves_prev=' + ctx.stats.streetWaves
+									: '') +
+								')...'
+						);
+					}
+					if (targetNeed > 0) {
+						var lastPrint2 = 0;
+						await pbfReader.forEachBlobAsync(
+							inputPath,
+							{ startOffset: 0, startBlobIndex: 0 },
+							function (blob) {
+								if (shouldStop()) {
+									markStopped();
+									return 'stop';
+								}
+								if (blob.type === 'OSMData') {
+									var pb2 = osmformat.PrimitiveBlock.read(
+										new Pbf(blob.data)
+									);
+									harvestStreetNodes(
+										pb2,
+										ctx.neededNodeIds,
+										ctx.streetCoords,
+										ctx.stats,
+										ctx.neededAdminNodeIds
+									);
+									if (ctx.streetCoords.size >= targetNeed) return 'stop';
+								}
+								if (!quiet) {
+									var now2 = Date.now();
+									if (now2 - lastPrint2 > 400) {
+										lastPrint2 = now2;
+										process.stdout.write(
+											'\r pass2 blob ' +
+												blob.blobIndex +
+												' resolved=' +
+												ctx.streetCoords.size +
+												'/' +
+												targetNeed +
+												'   '
+										);
+									}
+								}
+								if (shouldStop()) {
+									markStopped();
+									return 'stop';
+								}
+							}
+						);
+						if (!quiet) process.stdout.write('\n');
+					}
+					if (!stoppedEarly) {
+						if (ctx.pendingAdminMuni.length) {
+							emitPendingAdminMuni(ctx);
+						}
+						if (ctx.pendingStreets.length) {
+							emitPendingStreets(ctx);
+						}
+						if (!quiet) {
+							console.error(formatExtractSummary(ctx.stats));
+						}
+					}
+				} else if (
+					twoPassGeometry &&
+					(ctx.pendingStreets.length || ctx.pendingAdminMuni.length) &&
+					stoppedEarly
+				) {
+					if (!quiet) {
+						console.error(
+							'Cancelado com pendentes não gravados. Apague a pasta e recomece (não use --resume).'
 						);
 					}
 				}
-			} catch (err2) {
-				return fail(err2);
-			}
-		} else if (
-			twoPassGeometry &&
-			(ctx.pendingStreets.length || ctx.pendingAdminMuni.length) &&
-			stoppedEarly
-		) {
-			if (!quiet) {
-				console.error(
-					'Soft-stop antes da pass 2 — pendentes não gravados. Rode de novo sem --resume.'
-				);
-			}
-		}
 
-		writer
-			.flush()
-			.then(function () {
+				await writer.flush();
 				var cursor = {
 					fileOffset: bytesReadEstimate,
 					blobIndex: startBlobIndex + dataBlobs,
@@ -1297,14 +1545,21 @@ function runExtractGeocode(options) {
 					twoPassStreets: twoPassStreets,
 					shardLines: shardLines,
 					writerCounts: writer.counts,
-					shards: typeof writer.getShardSnapshot === 'function' ? writer.getShardSnapshot() : {},
+					shards:
+						typeof writer.getShardSnapshot === 'function'
+							? writer.getShardSnapshot()
+							: {},
 					inputPath: inputPath,
 					outDir: outDir,
 					stoppedEarly: stoppedEarly,
 					stopReason: stopReason,
 					nodeCacheSize: ctx.nodeCache.size,
 					streetCoordsSize: ctx.streetCoords.size,
-					neededNodeIds: ctx.neededNodeIds.size
+					neededNodeIds: ctx.neededNodeIds.size,
+					neededAdminNodeIds: ctx.neededAdminNodeIds.size,
+					ufFilter: ufAllow ? ufBr.ufAllowList(ufAllow) : null,
+					waveNodes: waveNodes,
+					waveStreets: waveStreets
 				};
 				fs.writeFileSync(statsPath, JSON.stringify(payload, null, 2), 'utf8');
 				if (!quiet) {
@@ -1323,8 +1578,10 @@ function runExtractGeocode(options) {
 					outDir: outDir,
 					statsPath: statsPath
 				});
-			})
-			.catch(fail);
+			} catch (err) {
+				fail(err);
+			}
+		})();
 	});
 }
 
@@ -1338,7 +1595,11 @@ function parseCli(argv) {
 		quiet: false,
 		nodeCacheMax: DEFAULT_NODE_CACHE,
 		shardLines: 0,
-		shardOnly: null
+		shardOnly: null,
+		uf: '',
+		region: '',
+		waveNodes: DEFAULT_WAVE_NODES,
+		waveStreets: DEFAULT_WAVE_STREETS
 	};
 	for (var i = 0; i < args.length; i++) {
 		var a = args[i];
@@ -1354,6 +1615,18 @@ function parseCli(argv) {
 		else if (a.indexOf('--shard-lines=') === 0)
 			opts.shardLines = parseInt(a.slice(14), 10) || 0;
 		else if (a === '--shard-lines') opts.shardLines = parseInt(args[++i], 10) || 0;
+		else if (a.indexOf('--uf=') === 0) opts.uf = a.slice(5);
+		else if (a === '--uf') opts.uf = args[++i] || '';
+		else if (a.indexOf('--region=') === 0) opts.region = a.slice(9);
+		else if (a === '--region') opts.region = args[++i] || '';
+		else if (a.indexOf('--wave-nodes=') === 0)
+			opts.waveNodes = parseInt(a.slice(13), 10) || DEFAULT_WAVE_NODES;
+		else if (a === '--wave-nodes')
+			opts.waveNodes = parseInt(args[++i], 10) || DEFAULT_WAVE_NODES;
+		else if (a.indexOf('--wave-streets=') === 0)
+			opts.waveStreets = parseInt(a.slice(15), 10) || DEFAULT_WAVE_STREETS;
+		else if (a === '--wave-streets')
+			opts.waveStreets = parseInt(args[++i], 10) || DEFAULT_WAVE_STREETS;
 		else if (a.indexOf('--shard-datasets=') === 0) {
 			opts.shardOnly = a
 				.slice(17)
@@ -1388,19 +1661,42 @@ function parseCli(argv) {
 		process.env.OSM_GEO_OUT ||
 		opts.inputPath.replace(/\.pbf$/i, '') + '-geo';
 	if (!opts.datasets) opts.datasets = parseDatasets('all');
+	opts.ufAllow = ufBr.parseUfFilter(opts.uf, opts.region);
 	return opts;
 }
 
 function main() {
 	var opts = parseCli(process.argv);
 	var softCount = 0;
+	var forceExitTimer = null;
+	var control = null;
+
 	function onSig() {
 		softCount++;
-		if (softCount === 1 && control) control.softStop('SIGINT');
-		else if (softCount === 2 && control) control.hardStop();
-		else process.exit(130);
+		// Sem control ainda (startup): sai na hora.
+		if (!control) {
+			process.exit(130);
+			return;
+		}
+		if (softCount === 1) {
+			control.softStop('SIGINT');
+			return;
+		}
+		if (softCount === 2) {
+			control.hardStop();
+			// Se o loop ainda não cedeu, força exit em 2s (terminal fica aberto).
+			if (!forceExitTimer) {
+				forceExitTimer = setTimeout(function () {
+					console.error('\nTimeout hard-stop — process.exit(130)\n');
+					process.exit(130);
+				}, 2000);
+				if (forceExitTimer.unref) forceExitTimer.unref();
+			}
+			return;
+		}
+		// 3º Ctrl+C: exit imediato sem esperar flush
+		process.exit(130);
 	}
-	var control = null;
 	process.on('SIGINT', onSig);
 	process.on('SIGTERM', onSig);
 
@@ -1413,14 +1709,21 @@ function main() {
 		nodeCacheMax: opts.nodeCacheMax,
 		shardLines: opts.shardLines,
 		shardOnly: opts.shardOnly,
+		ufAllow: opts.ufAllow,
+		uf: opts.uf,
+		region: opts.region,
+		waveNodes: opts.waveNodes,
+		waveStreets: opts.waveStreets,
 		onControl: function (c) {
 			control = c;
 		}
 	})
-		.then(function (result) {
-			process.exit(result.stoppedEarly ? 0 : 0);
+		.then(function () {
+			if (forceExitTimer) clearTimeout(forceExitTimer);
+			process.exit(0);
 		})
 		.catch(function (err) {
+			if (forceExitTimer) clearTimeout(forceExitTimer);
 			console.error(err);
 			process.exit(1);
 		});
@@ -1435,12 +1738,17 @@ module.exports = {
 	processFeatureWay: processFeatureWay,
 	emitPendingStreets: emitPendingStreets,
 	harvestStreetNodes: harvestStreetNodes,
+	flushStreetWave: flushStreetWave,
+	shouldFlushStreetWave: shouldFlushStreetWave,
+	formatExtractSummary: formatExtractSummary,
 	geomFromNodeIds: geomFromNodeIds,
 	decodeWayRefs: decodeWayRefs,
 	createNodeCache: createNodeCache,
 	logradouroKind: logradouroKind,
 	altNames: altNames,
-	nameNorm: nameNorm
+	nameNorm: nameNorm,
+	DEFAULT_WAVE_NODES: DEFAULT_WAVE_NODES,
+	DEFAULT_WAVE_STREETS: DEFAULT_WAVE_STREETS
 };
 
 if (require.main === module) {

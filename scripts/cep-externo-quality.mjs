@@ -1,14 +1,14 @@
 /**
- * Relatório de qualidade das coordenadas em CEP_EXTERNO.TXT.
+ * Relatório de qualidade das coordenadas em CEP_EXTERNO_{UF}.TXT (ou monólito).
  *
  * Detecta buckets por gaps em `consultado_em` e grava um markdown por bucket
  * (+ um índice). Também pode analisar só a última rodada (--last).
  *
- *   node scripts/cep-externo-quality.mjs
- *   node scripts/cep-externo-quality.mjs --cache=G:\dne-geo-local\CEP_EXTERNO.TXT
- *   node scripts/cep-externo-quality.mjs --dne=G:\dne-geo-local --out=G:\dne-geo-local\qualidade
- *   node scripts/cep-externo-quality.mjs --last   # só o bucket mais recente
- *   node scripts/cep-externo-quality.mjs --ceps=a,b,c --label=bucket-005  # lista explícita
+ *   node scripts/cep-externo-quality.mjs --dir=G:\dne-geo-br
+ *   node scripts/cep-externo-quality.mjs --cache-dir=G:\dne-geo-br --dne=G:\dne-geo-br
+ *   node scripts/cep-externo-quality.mjs --cache=G:\legado\CEP_EXTERNO.TXT
+ *   node scripts/cep-externo-quality.mjs --last
+ *   node scripts/cep-externo-quality.mjs --ceps=a,b,c --label=bucket-005
  */
 import fs from 'fs';
 import path from 'path';
@@ -22,27 +22,50 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const BR_CENTER = { lat: -14.235004, lng: -51.92528, tol: 0.001 };
 
+function detectUfsFromDir(dir) {
+	if (!dir || !fs.existsSync(dir)) return [];
+	return fs
+		.readdirSync(dir)
+		.map((n) => {
+			const m = n.match(/^DNE_GEO_LOGRADOURO_([A-Za-z]{2})\.TXT$/i);
+			return m ? m[1].toUpperCase() : null;
+		})
+		.filter(Boolean)
+		.sort();
+}
+
 function parseArgs(argv) {
 	const o = {
-		cache: 'G:\\dne-geo-local\\CEP_EXTERNO.TXT',
-		dne: 'G:\\dne-geo-local',
-		out: 'G:\\dne-geo-local\\qualidade',
-		ufs: ['SP', 'RJ', 'MG', 'ES'],
+		dir: 'G:\\dne-geo-br',
+		cache: null,
+		cacheDir: null,
+		dne: null,
+		out: null,
+		ufs: null,
 		gapSec: 90,
 		last: false,
 		label: null,
 		ceps: null,
 	};
 	for (const a of argv) {
-		if (a.startsWith('--cache=')) o.cache = a.slice(8);
+		if (a.startsWith('--dir=')) o.dir = a.slice(6);
+		else if (a.startsWith('--cache=')) o.cache = a.slice(8);
+		else if (a.startsWith('--cache-dir=')) o.cacheDir = a.slice(12);
 		else if (a.startsWith('--dne=')) o.dne = a.slice(6);
 		else if (a.startsWith('--out=')) o.out = a.slice(6);
-		else if (a.startsWith('--ufs=')) o.ufs = a.slice(6).split(',').map((s) => s.trim().toUpperCase());
+		else if (a.startsWith('--ufs=')) o.ufs = a.slice(6).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
 		else if (a.startsWith('--gap-sec=')) o.gapSec = Number(a.slice(10));
 		else if (a.startsWith('--label=')) o.label = a.slice(8);
 		else if (a.startsWith('--ceps=')) o.ceps = a.slice(7).split(',').map((c) => cepExt.digitsCep(c)).filter(Boolean);
 		else if (a.startsWith('--ceps-file=')) o.cepsFile = a.slice(12);
 		else if (a === '--last') o.last = true;
+	}
+	if (!o.dne) o.dne = o.dir;
+	if (!o.cacheDir) o.cacheDir = o.dir;
+	if (!o.out) o.out = path.join(o.dir, 'qualidade');
+	if (!o.ufs || !o.ufs.length) {
+		o.ufs = detectUfsFromDir(o.dne);
+		if (!o.ufs.length) o.ufs = ['SP', 'RJ', 'MG', 'ES'];
 	}
 	return o;
 }
@@ -385,11 +408,15 @@ function renderMarkdown(meta, report) {
 
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
-	console.error(`Cache: ${opts.cache}`);
+	const cacheLabel = opts.cache || `${opts.cacheDir}\\CEP_EXTERNO_{UF}.TXT`;
+	console.error(`Cache: ${cacheLabel}`);
 	console.error(`DNE:   ${opts.dne}`);
 	console.error(`Out:   ${opts.out}`);
+	console.error(`UFs:   ${opts.ufs.join(',')}`);
 
-	const cache = await cepExt.loadCache(opts.cache);
+	const cache = opts.cache
+		? await cepExt.loadCache(opts.cache)
+		: await cepExt.loadCacheMulti(opts.cacheDir, { ufs: opts.ufs });
 	console.error(`CEPs no cache: ${cache.size}`);
 	if (cache.size === 0) {
 		console.error('Cache vazio — nada a analisar.');

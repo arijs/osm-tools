@@ -68,3 +68,49 @@ test('wipeOsmOutputs remove TXT e pastas OSM_', function () {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test('resolveDatasetPaths: flat e shards (prefere pasta)', function () {
+	var dir = fs.mkdtempSync(path.join(os.tmpdir(), 'osm-resolve-'));
+	try {
+		// flat only
+		fs.writeFileSync(path.join(dir, 'OSM_LOGRADOURO_ES.TXT'), 'a\nb\n');
+		var flat = txtAt.resolveDatasetPaths(dir, 'OSM_LOGRADOURO_ES');
+		assert.equal(flat.mode, 'flat');
+		assert.equal(flat.paths.length, 1);
+
+		// shards with MANIFEST
+		var root = path.join(dir, 'OSM_LOGRADOURO_SP');
+		var shardDir = path.join(root, '3-linhas');
+		fs.mkdirSync(shardDir, { recursive: true });
+		fs.writeFileSync(path.join(shardDir, '000001.txt'), '1\n2\n3\n');
+		fs.writeFileSync(path.join(shardDir, '000002.txt'), '4\n');
+		fs.writeFileSync(path.join(root, 'MANIFEST.json'), JSON.stringify({
+			dataset_key: 'OSM_LOGRADOURO_SP',
+			shard_lines: 3,
+			shard_dir: '3-linhas',
+			total_lines: 4,
+			shard_count: 2,
+			shards: [
+				{ file: '000001.txt', lines: 3 },
+				{ file: '000002.txt', lines: 1 }
+			]
+		}));
+		var sh = txtAt.resolveDatasetPaths(dir, 'OSM_LOGRADOURO_SP');
+		assert.equal(sh.mode, 'shard');
+		assert.equal(sh.paths.length, 2);
+		assert.ok(sh.paths[0].endsWith('000001.txt'));
+		assert.ok(sh.paths[1].endsWith('000002.txt'));
+		assert.equal(sh.totalLines, 4);
+
+		// se flat e shard existem, prefere shard
+		fs.writeFileSync(path.join(dir, 'OSM_LOGRADOURO_SP.TXT'), 'old\n');
+		var prefer = txtAt.resolveDatasetPaths(dir, 'OSM_LOGRADOURO_SP');
+		assert.equal(prefer.mode, 'shard');
+
+		assert.equal(txtAt.resolveDatasetPaths(dir, 'OSM_LOGRADOURO_XX').mode, 'missing');
+		assert.equal(txtAt.datasetExists(dir, 'OSM_LOGRADOURO_ES'), true);
+		assert.equal(txtAt.datasetExists(dir, 'OSM_LOGRADOURO_XX'), false);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

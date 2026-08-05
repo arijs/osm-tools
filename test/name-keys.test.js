@@ -2,7 +2,9 @@
 
 var test = require('node:test');
 var assert = require('node:assert/strict');
-var { coreName, phoneticKey, isAreaTlo, isAreaKind } = require('../name-keys');
+var {
+	coreName, stripTitulos, coreBare, phoneticKey, isAreaTlo, isAreaKind
+} = require('../name-keys');
 
 test('coreName tira tipo de logradouro e conector da frente', function () {
 	assert.equal(coreName('travessa da moenda'), 'moenda');
@@ -18,6 +20,43 @@ test('coreName tira tipo de logradouro e conector da frente', function () {
 
 test('coreName casa DNE Travessa com OSM Rua', function () {
 	assert.equal(coreName('travessa santo antonio do monte'), coreName('rua santo antonio do monte'));
+});
+
+test('stripTitulos remove Doutor/Prof no início do núcleo', function () {
+	var a = stripTitulos('doutor olimpio carr ribeiro');
+	assert.equal(a.bare, 'olimpio carr ribeiro');
+	assert.deepEqual(a.removed, ['doutor']);
+
+	var b = stripTitulos('dr jose de alencar');
+	assert.equal(b.bare, 'jose de alencar');
+	assert.deepEqual(b.removed, ['dr']);
+
+	var c = stripTitulos('professor luis de camoes');
+	assert.equal(c.bare, 'luis de camoes');
+
+	// sem título: bare idêntico, removed vazio
+	var d = stripTitulos('olimpio carr ribeiro');
+	assert.equal(d.bare, 'olimpio carr ribeiro');
+	assert.deepEqual(d.removed, []);
+
+	// só título não some
+	assert.equal(stripTitulos('doutor').bare, 'doutor');
+	assert.equal(stripTitulos('').bare, '');
+});
+
+test('coreBare casa DNE sem título com OSM com Doutor', function () {
+	assert.equal(
+		coreBare('rua olimpio carr ribeiro'),
+		coreBare('rua doutor olimpio carr ribeiro')
+	);
+	assert.equal(
+		coreBare('rua eng joao silva'),
+		coreBare('rua engenheiro joao silva')
+	);
+	// título no meio do nome (sobrenome) não é stripado
+	assert.equal(coreBare('rua mario doutor silva'), 'mario doutor silva');
+	// nobreza não é stripada (identidade do logradouro)
+	assert.equal(coreBare('rua barao de piracicaba'), 'barao de piracicaba');
 });
 
 test('phoneticKey colapsa as variações reais DNE x OSM', function () {

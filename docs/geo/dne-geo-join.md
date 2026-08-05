@@ -23,26 +23,29 @@ volta a fazer o que sabe: carregar por chave.
 ## Entradas e saídas
 
 ```
-D:\…\Delimitado\                       G:\osm-geo-se-streets2\
-  LOG_LOCALIDADE.TXT   (latin1)          OSM_LOGRADOURO_{UF}.TXT   (utf8)
-  LOG_BAIRRO.TXT       (latin1)          OSM_BAIRRO.TXT
-  LOG_LOGRADOURO_{UF}.TXT (latin1)       OSM_ADDR_POINT_{UF}.TXT
+D:\…\Delimitado\                       G:\osm-geo-br-nordeste\   (ex.)
+  LOG_LOCALIDADE.TXT   (latin1)          OSM_LOGRADOURO_{UF}.TXT   (flat)
+  LOG_BAIRRO.TXT       (latin1)            ou OSM_LOGRADOURO_{UF}/  (shards)
+  LOG_LOGRADOURO_{UF}.TXT (latin1)       OSM_ADDR_POINT_{UF}…      (opcional)
          │                                        │
          └────────────────┬───────────────────────┘
                           ▼
-                 dne-geo-join.js --uf=SP
+                 dne-geo-join.js --uf=BA
                           │
       ┌───────────────────┼────────────────────┐
       ▼                   ▼                    ▼
-DNE_GEO_LOGRADOURO_SP.TXT  DNE_GEO_BAIRRO_SP.TXT  DNE_GEO_RELATORIO_SP.json
+DNE_GEO_LOGRADOURO_*.TXT  DNE_GEO_BAIRRO_*.TXT  DNE_GEO_RELATORIO_*.json
 ```
+
+OSM: se existir a **pasta** de shards, ela tem prioridade sobre o `.TXT` flat. Shards são lidos
+em ordem do `MANIFEST.json` (sem concatenar em disco).
 
 ```bash
 set NODE_OPTIONS=--max-old-space-size=8192
 node dne-geo-join.js ^
   --dne=D:\dev\ddsoft\ddsoft-online\_ignore\Delimitado ^
-  --osm=G:\osm-geo-se-streets2 ^
-  --out=G:\dne-geo-local --uf=SP
+  --osm=G:\osm-geo-br-sudeste ^
+  --out=G:\dne-geo-br --uf=SP
 ```
 
 Opções: `--cluster-cell=0.02`, `--footprint-cell=0.01`, `--max-extent-km=15`,
@@ -94,10 +97,26 @@ Para cada linha do DNE, candidatos = clusters cujo nome bate **e** que caem no f
 | `addr` | bate em `addr:street` de `OSM_ADDR_POINT` | +0,1 pp |
 | `nucleo` | núcleo sem tipo de logradouro (DNE `Travessa Goiás` ↔ OSM `Rua Goiás`) | +2,5 pp |
 | `fonetico` | chave fonética PT-BR (`z→s`, `y→i`, `ph→f`, `h` mudo, dobradas colapsadas) | +1,7 pp |
-| | **Total determinístico** | **87,8 %** |
+| `titulo` | núcleo sem títulos/honrarias (`Doutor`, `Dr`, `Prof`, …) — DNE costuma omitir, OSM grava | a medir em re-join |
+| `titulo_fonetico` | `titulo` + chave fonética | a medir |
+| | **Total determinístico (sem título)** | **87,8 %** |
 
 Fuzzy por distância de edição fica **fora** (atrás de `--fuzzy`): rendia +5,2 % bruto produzindo
 `flor de cereja` → `flor de cera` e `mércia` → `meca`.
+
+**Títulos stripados** (lista em `name-keys.js` / `TITULOS`): doutor/dr, professor/prof, engenheiro/eng,
+desembargador, senador, deputado, ministro, presidente, padre/frei/monsenhor, patentes (marechal…
+tenente), comendador, vereador, prefeito, governador. **Fora:** santo/são (topônimo) e nobreza
+(barão, visconde… — fazem parte do nome). Só tokens **no início** do núcleo; “Mario Doutor Silva”
+não perde o meio.
+
+Exemplo: DNE `Olímpio Carr Ribeiro` + `TLO=Rua` ↔ OSM `Rua Doutor Olímpio Carr Ribeiro` →
+`geo_regra=titulo`.
+
+**Auditoria no relatório** (`DNE_GEO_RELATORIO_{UF}.json`):
+
+- `titulo_exemplos` — até 30 matches `titulo` / `titulo_fonetico` com núcleos, tokens removidos e CEP
+- `sem_nome_osm_exemplos` — até 30 residual sem match (com `cep5` e núcleo bare) para amostrar o que falta
 
 **Guarda kind-aware:** candidato de área só vale para `TLO_TX` ∈ {Praça, Largo, Parque, Jardim,
 Vila, Área}. Sem ela, `Rua Dois` casa com `Praça Dois` — são 2 584 colisões possíveis em SP.

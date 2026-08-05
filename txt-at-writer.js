@@ -305,11 +305,150 @@ function rmDirRecursive(dir) {
 	fs.rmdirSync(dir);
 }
 
+/**
+ * Resolve dataset base name to ordered list of readable files.
+ *
+ * Preferência (sem concatenar):
+ * 1. Pasta de shards: `outDir/BASE/` com MANIFEST.json ou `*-linhas/*.txt`
+ * 2. Arquivo flat: `outDir/BASE.TXT` (case-insensitive em Windows)
+ *
+ * @param {string} outDir
+ * @param {string} baseName e.g. OSM_LOGRADOURO_SP, OSM_BAIRRO, OSM_ADDR_POINT_SP
+ * @returns {{ mode: 'shard'|'flat'|'missing', paths: string[], totalLines: number|null, manifest: object|null, root: string|null }}
+ */
+function resolveDatasetPaths(outDir, baseName) {
+	var shardRoot = path.join(outDir, baseName);
+	if (fs.existsSync(shardRoot) && fs.statSync(shardRoot).isDirectory()) {
+		var manPath = path.join(shardRoot, 'MANIFEST.json');
+		var paths = [];
+		var totalLines = null;
+		var manifest = null;
+		if (fs.existsSync(manPath)) {
+			try {
+				manifest = JSON.parse(fs.readFileSync(manPath, 'utf8'));
+			} catch (_) {
+				manifest = null;
+			}
+		}
+		if (manifest && Array.isArray(manifest.shards) && manifest.shards.length) {
+			var shardDir = path.join(
+				shardRoot,
+				manifest.shard_dir || String(manifest.shard_lines || 0) + '-linhas'
+			);
+			for (var i = 0; i < manifest.shards.length; i++) {
+				var rel = manifest.shards[i].file;
+				if (!rel) continue;
+				var fp = path.join(shardDir, rel);
+				if (fs.existsSync(fp)) paths.push(fp);
+			}
+			if (typeof manifest.total_lines === 'number') totalLines = manifest.total_lines;
+		}
+		if (!paths.length) {
+			// fallback: qualquer *.txt sob a pasta, ordem lexicográfica
+			paths = listTxtRecursiveSorted(shardRoot);
+		}
+		if (paths.length) {
+			return {
+				mode: 'shard',
+				paths: paths,
+				totalLines: totalLines,
+				manifest: manifest,
+				root: shardRoot
+			};
+		}
+	}
+
+	// flat: BASE.TXT (exact) then case variants
+	var candidates = [
+		path.join(outDir, baseName + '.TXT'),
+		path.join(outDir, baseName + '.txt')
+	];
+	for (var c = 0; c < candidates.length; c++) {
+		if (fs.existsSync(candidates[c]) && fs.statSync(candidates[c]).isFile()) {
+			return {
+				mode: 'flat',
+				paths: [candidates[c]],
+				totalLines: null,
+				manifest: null,
+				root: candidates[c]
+			};
+		}
+	}
+
+	// Windows: scan dir for case-insensitive match
+	if (fs.existsSync(outDir)) {
+		try {
+			var names = fs.readdirSync(outDir);
+			var want = (baseName + '.TXT').toLowerCase();
+			for (var n = 0; n < names.length; n++) {
+				if (names[n].toLowerCase() === want) {
+					var full = path.join(outDir, names[n]);
+					if (fs.statSync(full).isFile()) {
+						return {
+							mode: 'flat',
+							paths: [full],
+							totalLines: null,
+							manifest: null,
+							root: full
+						};
+					}
+				}
+			}
+		} catch (_) {}
+	}
+
+	return {
+		mode: 'missing',
+		paths: [],
+		totalLines: null,
+		manifest: null,
+		root: null
+	};
+}
+
+function listTxtRecursiveSorted(dir) {
+	var out = [];
+	function walk(d) {
+		var entries;
+		try {
+			entries = fs.readdirSync(d);
+		} catch (_) {
+			return;
+		}
+		entries.sort();
+		for (var i = 0; i < entries.length; i++) {
+			if (entries[i] === 'MANIFEST.json') continue;
+			var p = path.join(d, entries[i]);
+			var st;
+			try {
+				st = fs.statSync(p);
+			} catch (_) {
+				continue;
+			}
+			if (st.isDirectory()) walk(p);
+			else if (/\.txt$/i.test(entries[i])) out.push(p);
+		}
+	}
+	walk(dir);
+	out.sort();
+	return out;
+}
+
+/**
+ * Dataset exists as flat file and/or shard directory.
+ */
+function datasetExists(outDir, baseName) {
+	return resolveDatasetPaths(outDir, baseName).mode !== 'missing';
+}
+
 module.exports = {
 	DELIM: DELIM,
 	sanitizeField: sanitizeField,
 	formatRow: formatRow,
 	padShard: padShard,
 	createTxtAtWriter: createTxtAtWriter,
-	wipeOsmOutputs: wipeOsmOutputs
+	wipeOsmOutputs: wipeOsmOutputs,
+	resolveDatasetPaths: resolveDatasetPaths,
+	datasetExists: datasetExists,
+	listTxtRecursiveSorted: listTxtRecursiveSorted
 };

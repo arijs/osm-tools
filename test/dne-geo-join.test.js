@@ -64,7 +64,9 @@ function setupDirs() {
 		'113@ZZ@1@11@@Compartilhada@@11111013@Rua@S@R Compartilhada',
 		'114@ZZ@3@13@@Compartilhada@@11111014@Rua@S@R Compartilhada',
 		// âncora do município C (perto de A, para a pegada de C cobrir a via compartilhada)
-		'115@ZZ@3@13@@Gama Unica@@11111015@Rua@S@R Gama Unica'
+		'115@ZZ@3@13@@Gama Unica@@11111015@Rua@S@R Gama Unica',
+		// DNE sem título; OSM com Doutor → regra `titulo`
+		'116@ZZ@1@10@@Olimpio Carr Ribeiro@@04775120@Rua@S@R Olimpio Carr Ribeiro'
 	].join('\n');
 	fs.writeFileSync(path.join(dne, 'LOG_LOGRADOURO_ZZ.TXT'), Buffer.from(log, 'latin1'));
 
@@ -98,7 +100,10 @@ function setupDirs() {
 		// via na borda, um cluster só — reivindicada por A e C
 		osmRow(14, 'Rua Compartilhada', 'rua compartilhada', 'residential', A_LAT - 0.0015, A_LNG - 0.0015),
 		// âncora de C (perto de A)
-		osmRow(15, 'Rua Gama Unica', 'rua gama unica', 'residential', A_LAT - 0.0005, A_LNG - 0.0005)
+		osmRow(15, 'Rua Gama Unica', 'rua gama unica', 'residential', A_LAT - 0.0005, A_LNG - 0.0005),
+		// DNE "Olímpio Carr Ribeiro" ↔ OSM "Rua Doutor Olímpio Carr Ribeiro"
+		osmRow(16, 'Rua Doutor Olimpio Carr Ribeiro', 'rua doutor olimpio carr ribeiro',
+			'residential', A_LAT - 0.0025, A_LNG - 0.001)
 	].join('\n');
 	fs.writeFileSync(path.join(osm, 'OSM_LOGRADOURO_ZZ.TXT'), ways, 'utf8');
 
@@ -169,6 +174,51 @@ function readOut(dir, uf) {
 	return byId;
 }
 
+test('dne-geo-join: lê OSM em shards (mesmo resultado que flat)', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	// Converte flat → 2 shards de 5 linhas (MANIFEST)
+	var flat = path.join(d.osm, 'OSM_LOGRADOURO_ZZ.TXT');
+	var lines = fs.readFileSync(flat, 'utf8').split(/\r?\n/).filter(Boolean);
+	fs.unlinkSync(flat);
+	var root = path.join(d.osm, 'OSM_LOGRADOURO_ZZ');
+	var shardDir = path.join(root, '5-linhas');
+	fs.mkdirSync(shardDir, { recursive: true });
+	var mid = Math.ceil(lines.length / 2);
+	fs.writeFileSync(path.join(shardDir, '000001.txt'), lines.slice(0, mid).join('\n') + '\n');
+	fs.writeFileSync(path.join(shardDir, '000002.txt'), lines.slice(mid).join('\n') + '\n');
+	fs.writeFileSync(path.join(root, 'MANIFEST.json'), JSON.stringify({
+		dataset_key: 'OSM_LOGRADOURO_ZZ',
+		shard_lines: 5,
+		shard_dir: '5-linhas',
+		complete: true,
+		total_lines: lines.length,
+		shard_count: 2,
+		shards: [
+			{ file: '000001.txt', lines: mid },
+			{ file: '000002.txt', lines: lines.length - mid }
+		]
+	}));
+
+	var res = join.resolveOsmLogradouro(d.osm, 'ZZ');
+	assert.equal(res.mode, 'shard');
+	assert.equal(res.paths.length, 2);
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true
+	});
+	assert.equal(rel.osm.mode, 'shard');
+	assert.equal(rel.osm.files, 2);
+	assert.equal(rel.osm.linhas, lines.length);
+	assert.ok(rel.geo_status.ok >= 11);
+
+	var row = readOut(d.out, 'ZZ');
+	assert.equal(row['100'][20], 'ok');
+	assert.equal(row['100'][21], 'exato');
+	assert.equal(row['103'][21], 'nucleo');
+});
+
 test('dne-geo-join: cascata, footprint, guarda de área e status', async function (t) {
 	var d = setupDirs();
 	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
@@ -178,7 +228,7 @@ test('dne-geo-join: cascata, footprint, guarda de área e status', async functio
 	});
 
 	var row = readOut(d.out, 'ZZ');
-	assert.equal(Object.keys(row).length, 15);
+	assert.equal(Object.keys(row).length, 16);
 	assert.equal(row['100'].length, 25, 'contrato de 25 colunas');
 
 	// --- desnormalização DNE
@@ -194,6 +244,8 @@ test('dne-geo-join: cascata, footprint, guarda de área e status', async functio
 	assert.equal(row['104'][21], 'fonetico', 'DNE Luiz ↔ OSM Luis');
 	assert.equal(row['105'][21], 'area', 'Praça ↔ leisure=park');
 	assert.equal(row['109'][21], 'name_alt', 'casou pela denominação alternativa');
+	assert.equal(row['116'][20], 'ok');
+	assert.equal(row['116'][21], 'titulo', 'DNE sem Doutor ↔ OSM com Doutor');
 
 	// --- guarda kind-aware: parque não vira Rua
 	assert.equal(row['106'][20], 'sem_nome_osm', 'Rua não pode casar com parque homônimo');
@@ -234,13 +286,20 @@ test('dne-geo-join: cascata, footprint, guarda de área e status', async functio
 
 	// --- relatório
 	assert.equal(rel.uf, 'ZZ');
-	assert.equal(rel.linhas_dne, 15);
-	// ok: base 8 + compartilhada×2 + gama = 11; periferia pode ou não
-	assert.ok(rel.geo_status.ok >= 11);
+	assert.equal(rel.linhas_dne, 16);
+	// ok: base 8 + compartilhada×2 + gama + titulo = 12; periferia pode ou não
+	assert.ok(rel.geo_status.ok >= 12);
 	assert.equal(rel.geo_status.sem_nome_osm, 2);
 	assert.ok((rel.geo_status.ambiguo || 0) >= 1); // pelo menos o conflito
 	assert.ok(rel.localidades.com_footprint >= 1);
 	assert.ok(rel.localidades.herdados_de_subordinacao >= 1);
+	assert.ok((rel.geo_regra.titulo || 0) >= 1);
+	assert.ok(Array.isArray(rel.titulo_exemplos));
+	assert.ok(rel.titulo_exemplos.some(function (e) {
+		return e.log_nu === '116' && e.geo_regra === 'titulo';
+	}));
+	assert.ok(Array.isArray(rel.sem_nome_osm_exemplos));
+	assert.ok(rel.sem_nome_osm_exemplos.length >= 1);
 
 	// --- subproduto de bairro
 	var bairro = fs.readFileSync(path.join(d.out, 'DNE_GEO_BAIRRO_ZZ.TXT'), 'utf8')
@@ -268,7 +327,7 @@ test('dne-geo-join: UF sem extract sai toda como sem_extract', async function (t
 	var rel2 = await join.run({
 		dneDir: d2.dne, osmDir: d2.osm, outDir: d2.out, uf: 'ZZ', quiet: true
 	});
-	assert.equal(rel2.geo_status.sem_extract, 15);
+	assert.equal(rel2.geo_status.sem_extract, 16);
 	assert.equal(rel2.geo_status.ok, undefined);
 });
 

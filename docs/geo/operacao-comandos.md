@@ -36,6 +36,46 @@ medições — não apagar nem sobrescrever.
 node extract-geocode-pbf.js G:\sudeste-260725.osm.pbf --out=G:\osm-geo-full --datasets=estado,municipio,bairro,logradouro
 ```
 
+### Brasil inteiro (~2 GB) — fatiar por região / UF
+
+O two-pass agenda **todos** os nós de logradouro num `Set`. No PBF nacional isso
+estoura o limite do V8 (`RangeError: Set maximum size exceeded`). O extract agora:
+
+1. **Waves** (default): faz pass2 e libera o `Set` a cada ~8 M nós / 150 k ruas.
+2. **`--region` / `--uf`**: grava só a fatia pedida (e ignora cedo ways com
+   `addr:state`/IBGE fora da fatia).
+
+Receita recomendada (pastas **separadas** por fatia — cada run dá wipe na `--out`):
+
+```powershell
+$env:NODE_OPTIONS="--max-old-space-size=8192"
+$PBF="G:\brazil-260724.osm.pbf"
+$DS="estado,municipio,bairro,logradouro"
+
+# Admin nacional (leve — sem logradouro, sem wave)
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-admin --datasets=estado,municipio
+
+# Regiões (exceto sudeste — este vai por UF)
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-norte --datasets=bairro,logradouro --region=norte --shard-lines=20000
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-nordeste --datasets=bairro,logradouro --region=nordeste --shard-lines=20000
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-centro-oeste --datasets=bairro,logradouro --region=centro-oeste --shard-lines=20000
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-sul --datasets=bairro,logradouro --region=sul --shard-lines=20000
+
+# Sudeste por UF (SP é o volume maior)
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-es --datasets=bairro,logradouro --uf=ES --shard-lines=20000
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-mg --datasets=bairro,logradouro --uf=MG --shard-lines=20000
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-rj --datasets=bairro,logradouro --uf=RJ --shard-lines=20000
+node extract-geocode-pbf.js $PBF --out=G:\osm-geo-br-sp --datasets=bairro,logradouro --uf=SP --shard-lines=20000
+```
+
+Flags úteis: `--wave-nodes=6000000` (mais conservador), `--wave-streets=100000`.
+Regiões: `norte`, `nordeste`, `centro-oeste` (aliases `co`, `centrooeste`),
+`sudeste` (`se`), `sul`. Dá para combinar: `--uf=SP --region=sul`.
+
+**Nota:** com `--uf`/`--region`, ways **sem** tag de estado ainda entram na agenda
+(coords só na pass2); o filtro final descarta o que cair fora do bbox da fatia.
+Waves evitam o crash mesmo sem filtro.
+
 ### Resume (pass 1 apenas confiável)
 
 ```bash
@@ -57,22 +97,26 @@ php bin/console osm:locais:enrich-geo --dir=G:\osm-geo-se --overwrite   # sobres
 
 ## Cache CEP externo (AwesomeAPI)
 
+Cache canônico: **`CEP_EXTERNO_{UF}.TXT`** em `G:\dne-geo-br` (um arquivo por UF).
+
 ```bash
 cd D:\dev\github\osm-tools
-# importa amostra JSONL antiga (se houver)
-node scripts/cep-externo-from-jsonl.mjs --in=_ignore/awesomeapi-sample/results.jsonl --out=G:\dne-geo-local\CEP_EXTERNO.TXT
+
+# fatiar monólito legado → por UF
+node scripts/split-cep-externo-by-uf.mjs --in=G:\dne-geo-br\CEP_EXTERNO.TXT --out=G:\dne-geo-br
 
 # consulta só CEPs ainda não cacheados (chave em .env.local)
-node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-local --cache=G:\dne-geo-local\CEP_EXTERNO.TXT --n=1000
+# --dir = pasta com DNE_GEO_LOGRADOURO_* + CEP_EXTERNO_*
+node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-br --n=1000
+node scripts/sample-awesomeapi-cep.mjs --dir=G:\dne-geo-br --ufs=SP,RJ --n=500
 ```
 
-Spec: [cep-externo.md](./cep-externo.md). Reexecução **não** reconsulta CEP já presente no TXT.
+Spec: [cep-externo.md](./cep-externo.md). Reexecução **não** reconsulta CEP já presente.
 
-Após cada lote, grava relatório de qualidade em `G:\dne-geo-local\qualidade\` (e espelho em
-`docs/geo/cep-externo-qualidade/`). Para reprocessar buckets já no cache:
+Após cada lote: `G:\dne-geo-br\qualidade\`. Reprocessar:
 
 ```bash
-node scripts/cep-externo-quality.mjs --cache=G:\dne-geo-local\CEP_EXTERNO.TXT --dne=G:\dne-geo-local
+node scripts/cep-externo-quality.mjs --dir=G:\dne-geo-br
 ```
 
 ## Join OSM ↔ DNE (osm-tools)
@@ -89,27 +133,44 @@ Pasta canônica da saída boa (2026-07-30): **`G:\dne-geo-local`**. `G:\dne-geo`
 
 Flags úteis: `--envelope-tol-km=1` (default), `--sem-envelope`, `--sem-exclusao-cluster`, `--quiet`.
 
+### Brasil (pós-extract por região)
+
+O join lê **flat ou shards** (`OSM_LOGRADOURO_{UF}/` + `MANIFEST.json`). Prefere shards se a
+pasta existir. Sudeste flat → fatiar com:
+
+```bash
+node scripts/shard-osm-txt.js --dir=G:\osm-geo-br-sudeste --shard-lines=20000
+```
+
+Passo a passo (Passo 0 conferido + loop 27 UFs + load):  
+[**proximo-passo-brasil.md**](./proximo-passo-brasil.md).
+
 ## Enrich no índice DNE (bairro/logradouro) — preferir `DNE_GEO_*`
 
-A CLI **prefere** `DNE_GEO_LOGRADOURO_{UF}.TXT` / `DNE_GEO_BAIRRO_{UF}.TXT` na `--dir` (load por
-chave). Match por nome em `OSM_*` só com `--legacy-match` — **não** usar contra `streets2`
-(2 584 colisões kind medidas).
+A CLI **prefere** `DNE_GEO_LOGRADOURO_{UF}` / `DNE_GEO_BAIRRO_{UF}` na `--dir` (load por
+`log_nu` / `bai_nu`). Aceita **flat** `.TXT` **ou** pasta fatiada (`KEY/20000-linhas/…` +
+`MANIFEST.json`), igual ao extract. Match por nome em `OSM_*` só com `--legacy-match` (ou se
+não houver `DNE_GEO_*`) — **não** usar legado contra extract com praças no mesmo arquivo.
 
 ```bash
 cd D:\dev\ddsoft\ddsoft-online
 
-# caminho certo: pasta do join
-# sem --uf: processa todas as UFs com DNE_GEO_* na pasta (SP,RJ,MG,ES, …)
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro --dry-run
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=bairro
+# caminho certo: pasta do join (Brasil)
+# sem --uf: processa todas as UFs com DNE_GEO_* na pasta
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=logradouro --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=logradouro
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=bairro
 
 # uma UF só
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-local --dataset=logradouro --uf=SP --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=logradouro --uf=SP --dry-run
+
+# legado OSM fatiado (sem DNE_GEO): shards nativos
+php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-br-norte --dataset=logradouro --uf=AM --legacy-match
+php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-br-norte --dataset=bairro --legacy-match
 ```
 
-Opções: `--uf=SP` (omitido = todas), `--overwrite` (default só `lat IS NULL`), `--legacy-match`,
-`--max-rows` / `--max-seconds`, `--memory=4G`. Shards (`--shard*`) só no caminho legado OSM.
+Opções: `--uf=SP` (omitido = todas detectadas), `--overwrite`, `--legacy-match`,
+`--max-rows` / `--max-seconds`, `--memory=4G`, `--shard` / `--shard-from` / `--shard-to`.
 
 ## Testes
 

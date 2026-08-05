@@ -25,7 +25,9 @@ Default de datasets: estado + município + bairro + logradouro (`addr` off).
 Espelho de `LOG_LOGRADOURO_{UF}.TXT` do DNE:
 
 - Flat: `OSM_LOGRADOURO_SP.TXT`, `_RJ`, `_MG`, `_ES`, …
-- Residual **`XX`** se UF não resolvida (tags → IBGE → bbox do way vs retângulos SE)
+- Residual **`XX`** se UF não resolvida (tags → IBGE → bbox do way vs retângulos UF BR)
+- Filtro de fatia: `--uf=SP,RJ` / `--region=norte|nordeste|centro-oeste|sudeste|sul`
+- Waves (anti-OOM): `--wave-nodes=8000000` / `--wave-streets=150000` — ver changelog 2026-07-31
 - **Fatiado** (`--shard-lines=N`):
 
 ```text
@@ -101,13 +103,18 @@ Custo: ~**2×** leitura do arquivo. Memória: set de node ids + lista de ways pe
 
 ## Resume e soft-stop — o que é e o que **não** é
 
-### Soft-stop (Ctrl+C)
+### Soft-stop / cancelar (Ctrl+C)
 
-- 1º sinal: pede parada no **fim do blob PBF atual** (prazo default 30 s).  
-- 2º: hard-stop.  
-- 3º: `exit`.  
+O scan de blobs **cede o event loop** entre blobs (`forEachBlobAsync`), senão o
+SIGINT só era processado **depois** de cada wave (re-leitura inteira do PBF).
 
-Grava `extract-checkpoint.json` com `cursor.fileOffset` / `blobIndex`.
+| Ctrl+C | Efeito |
+|--------|--------|
+| 1º | Soft-stop: para no **fim do blob atual**, **não inicia** wave/pass2 novas; pendentes da onda atual **não** são gravados |
+| 2º | Hard-stop + se ainda não sair, `process.exit(130)` em ~2 s |
+| 3º | `process.exit(130)` imediato (terminal continua aberto) |
+
+Grava `extract-checkpoint.json` com `cursor.fileOffset` / `blobIndex` se chegou a flush.
 
 ### `--resume`
 

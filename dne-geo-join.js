@@ -1,8 +1,12 @@
 'use strict';
 
 /**
- * Junta o DNE (LOG_*.TXT, latin1) com o extract OSM (OSM_*.TXT, utf8) e emite
- * DNE_GEO_LOGRADOURO_{UF}.TXT com geometria por logradouro.
+ * Junta o DNE (LOG_*.TXT, latin1) com o extract OSM (OSM_*.TXT ou shards, utf8)
+ * e emite DNE_GEO_LOGRADOURO_{UF}.TXT com geometria por logradouro.
+ *
+ * OSM aceita arquivo flat `OSM_LOGRADOURO_{UF}.TXT` **ou** pasta de shards
+ * `OSM_LOGRADOURO_{UF}/{N}-linhas/000001.txt` (+ MANIFEST.json). Prefere shards
+ * se a pasta existir. Idem para `OSM_ADDR_POINT_{UF}`.
  *
  * Especificação: docs/geo/dne-geo-join.md
  *
@@ -26,7 +30,10 @@ var keys = require('./name-keys');
 var geo = require('./geo-cluster');
 var txtAt = require('./txt-at-writer');
 
-var REGRAS = ['exato', 'area', 'name_alt', 'addr', 'nucleo', 'fonetico'];
+var REGRAS = [
+	'exato', 'area', 'name_alt', 'addr', 'nucleo', 'fonetico',
+	'titulo', 'titulo_fonetico'
+];
 
 // Houve aqui uma "âncora local" (bairro/CEP) para recuperar o resíduo
 // `fora_do_footprint`. Foi medida e removida: rendia 36 linhas em 341 813 (SP) e
@@ -45,6 +52,13 @@ function readLines(file, encoding, onLine) {
 		rl.on('close', resolve);
 		rl.on('error', reject);
 	});
+}
+
+/** Lê um ou mais arquivos em ordem (flat ou shards). */
+async function readLinesMany(files, encoding, onLine) {
+	for (var i = 0; i < files.length; i++) {
+		await readLines(files[i], encoding, onLine);
+	}
 }
 
 function num(v) {
@@ -107,12 +121,34 @@ async function loadLogradouros(dneDir, uf) {
 
 // ---------------------------------------------------------------- OSM (utf8)
 
-/** Lê OSM_LOGRADOURO_{UF} agrupando features por name_norm (e por name_alt_norm). */
+/**
+ * Resolve paths de OSM_LOGRADOURO_{UF} (shard ou flat).
+ * @returns {{ mode: string, paths: string[], label: string }}
+ */
+function resolveOsmLogradouro(osmDir, uf) {
+	var resolved = txtAt.resolveDatasetPaths(osmDir, 'OSM_LOGRADOURO_' + uf);
+	var label =
+		resolved.mode === 'shard'
+			? 'OSM_LOGRADOURO_' + uf + '/ (' + resolved.paths.length + ' shards)'
+			: resolved.mode === 'flat'
+				? path.basename(resolved.paths[0])
+				: 'OSM_LOGRADOURO_' + uf + '.TXT';
+	return { mode: resolved.mode, paths: resolved.paths, label: label, resolved: resolved };
+}
+
+/** Lê OSM_LOGRADOURO_{UF} (flat ou shards) agrupando por name_norm (e name_alt_norm). */
 async function loadOsmStreets(osmDir, uf, quiet) {
 	var byName = new Map();     // name_norm -> [feat]
 	var altOf = new Map();      // name_alt_norm -> Set(name_norm)
 	var lines = 0, semGeom = 0;
-	await readLines(path.join(osmDir, 'OSM_LOGRADOURO_' + uf + '.TXT'), null, function (l) {
+	var res = resolveOsmLogradouro(osmDir, uf);
+	if (!res.paths.length) {
+		return { byName: byName, altOf: altOf, lines: 0, semGeom: 0, mode: 'missing', files: 0 };
+	}
+	if (!quiet && res.mode === 'shard') {
+		process.stderr.write('  lendo ' + res.label + '\n');
+	}
+	await readLinesMany(res.paths, null, function (l) {
 		var p = l.split('@');
 		lines++;
 		var lat = num(p[10]), lng = num(p[11]);
@@ -148,15 +184,18 @@ async function loadOsmStreets(osmDir, uf, quiet) {
 		}
 	});
 	if (!quiet) process.stderr.write('\r  osm ' + lines + ' linhas, ' + byName.size + ' nomes\n');
-	return { byName: byName, altOf: altOf, lines: lines, semGeom: semGeom };
+	return {
+		byName: byName, altOf: altOf, lines: lines, semGeom: semGeom,
+		mode: res.mode, files: res.paths.length
+	};
 }
 
-/** Pontos addr:street viram features de peso 1 — só para dar candidato onde a way não tem nome. */
+/** Pontos addr:street (flat ou shards) — peso 1, só se não houver way com o mesmo name_norm. */
 async function loadAddrPoints(osmDir, uf, byName) {
-	var file = path.join(osmDir, 'OSM_ADDR_POINT_' + uf + '.TXT');
-	if (!fs.existsSync(file)) return 0;
+	var resolved = txtAt.resolveDatasetPaths(osmDir, 'OSM_ADDR_POINT_' + uf);
+	if (!resolved.paths.length) return 0;
 	var add = 0;
-	await readLines(file, null, function (l) {
+	await readLinesMany(resolved.paths, null, function (l) {
 		var p = l.split('@');
 		var lat = num(p[1]), lng = num(p[2]);
 		var nn = p[4];
@@ -200,24 +239,34 @@ function buildClusters(byName, clusterCell) {
 	return { clusters: clusters, byName: byNameIdx };
 }
 
-/** Índices derivados: núcleo sem tipo e chave fonética, sobre os nomes de cluster. */
+/**
+ * Índices derivados sobre os nomes de cluster:
+ * núcleo sem tipo, fonético, núcleo sem título, fonético sem título.
+ */
 function buildDerivedIndexes(byNameIdx) {
 	var byCore = new Map();
 	var byPhon = new Map();
+	var byTitle = new Map();
+	var byTitlePhon = new Map();
+	function push(map, key, idxs) {
+		if (!key) return;
+		var a = map.get(key);
+		if (a) { for (var i = 0; i < idxs.length; i++) a.push(idxs[i]); }
+		else map.set(key, idxs.slice());
+	}
 	byNameIdx.forEach(function (idxs, nn) {
 		var c = keys.coreName(nn);
 		if (!c) return;
-		var a = byCore.get(c);
-		if (a) { for (var i = 0; i < idxs.length; i++) a.push(idxs[i]); }
-		else byCore.set(c, idxs.slice());
-
-		var f = keys.phoneticKey(c);
-		if (!f) return;
-		var b = byPhon.get(f);
-		if (b) { for (var j = 0; j < idxs.length; j++) b.push(idxs[j]); }
-		else byPhon.set(f, idxs.slice());
+		push(byCore, c, idxs);
+		push(byPhon, keys.phoneticKey(c), idxs);
+		var bare = keys.stripTitulos(c).bare;
+		push(byTitle, bare, idxs);
+		push(byTitlePhon, keys.phoneticKey(bare), idxs);
 	});
-	return { byCore: byCore, byPhon: byPhon };
+	return {
+		byCore: byCore, byPhon: byPhon,
+		byTitle: byTitle, byTitlePhon: byTitlePhon
+	};
 }
 
 // ---------------------------------------------------------------- cascata
@@ -238,13 +287,18 @@ function candidatesFor(row, idxs, clusters) {
 }
 
 function cascadeCandidates(row, idx, clusters) {
+	var core = keys.coreName(row.comTipo);
+	var bare = keys.stripTitulos(core).bare;
 	var tries = [
 		['exato', idx.byName.get(row.comTipo)],
 		['exato', idx.byName.get(row.semTipo)],
 		['name_alt', idx.altIdx.get(row.comTipo)],
 		['name_alt', idx.altIdx.get(row.semTipo)],
-		['nucleo', idx.byCore.get(keys.coreName(row.comTipo))],
-		['fonetico', idx.byPhon.get(keys.phoneticKey(keys.coreName(row.comTipo)))]
+		['nucleo', idx.byCore.get(core)],
+		['fonetico', idx.byPhon.get(keys.phoneticKey(core))],
+		// DNE sem título ↔ OSM com Doutor/Prof/… (ou o inverso)
+		['titulo', idx.byTitle.get(bare)],
+		['titulo_fonetico', idx.byTitlePhon.get(keys.phoneticKey(bare))]
 	];
 	for (var i = 0; i < tries.length; i++) {
 		var cand = candidatesFor(row, tries[i][1], clusters);
@@ -273,8 +327,8 @@ async function run(opts) {
 	log('OSM  : ' + opts.osmDir);
 	log('UF   : ' + uf);
 
-	var osmFile = path.join(opts.osmDir, 'OSM_LOGRADOURO_' + uf + '.TXT');
-	var semExtract = !fs.existsSync(osmFile);
+	var osmRes = resolveOsmLogradouro(opts.osmDir, uf);
+	var semExtract = osmRes.mode === 'missing';
 
 	log('[1/6] DNE…');
 	var localidades = await loadLocalidades(opts.dneDir);
@@ -282,15 +336,16 @@ async function run(opts) {
 	var rows = await loadLogradouros(opts.dneDir, uf);
 	log('      localidades=' + localidades.size + ' bairros=' + bairros.size + ' logradouros=' + rows.length);
 
-	var osm = { byName: new Map(), altOf: new Map(), lines: 0, semGeom: 0 };
+	var osm = { byName: new Map(), altOf: new Map(), lines: 0, semGeom: 0, mode: 'missing', files: 0 };
 	var addrAdded = 0;
 	if (!semExtract) {
 		log('[2/6] OSM…');
 		osm = await loadOsmStreets(opts.osmDir, uf, quiet);
 		addrAdded = await loadAddrPoints(opts.osmDir, uf, osm.byName);
-		log('      addr:street sem way homônima: ' + addrAdded);
+		log('      modo=' + osm.mode + ' arquivos=' + osm.files +
+			' addr:street sem way homônima: ' + addrAdded);
 	} else {
-		log('[2/6] OSM ausente (' + path.basename(osmFile) + ') — tudo sai sem_extract');
+		log('[2/6] OSM ausente (' + osmRes.label + ') — tudo sai sem_extract');
 	}
 
 	log('[3/6] clusters…');
@@ -310,10 +365,12 @@ async function run(opts) {
 	});
 	var idx = {
 		byName: built.byName, altIdx: altIdx,
-		byCore: derived.byCore, byPhon: derived.byPhon
+		byCore: derived.byCore, byPhon: derived.byPhon,
+		byTitle: derived.byTitle, byTitlePhon: derived.byTitlePhon
 	};
 	log('      clusters=' + clusters.length + ' nomes=' + built.byName.size +
-		' nucleos=' + derived.byCore.size + ' foneticos=' + derived.byPhon.size);
+		' nucleos=' + derived.byCore.size + ' foneticos=' + derived.byPhon.size +
+		' titulos=' + derived.byTitle.size);
 
 	// ---- Fase 2: âncoras (nome com 1 loc_nu no DNE e 1 cluster no OSM)
 	log('[4/6] âncoras e footprint…');
@@ -603,6 +660,9 @@ async function run(opts) {
 	var porStatus = {}, porRegra = {}, bairroAgg = new Map();
 	// Diagnóstico do resíduo: `ambiguo` mistura causas com tratamentos diferentes.
 	var porMotivo = {}, exemplosAmbiguo = {}, distAmbiguo = {};
+	// Amostra de matches novos (título) e do residual sem nome — auditoria / aprendizado.
+	var exemplosTitulo = [];
+	var exemplosSemNome = [];
 	for (var m = 0; m < rows.length; m++) {
 		var row = rows[m];
 		var loc = localidades.get(row.loc_nu) || {};
@@ -620,6 +680,48 @@ async function run(opts) {
 		]);
 		porStatus[row.status] = (porStatus[row.status] || 0) + 1;
 		if (row.regra) porRegra[row.regra] = (porRegra[row.regra] || 0) + 1;
+		if (
+			(row.regra === 'titulo' || row.regra === 'titulo_fonetico') &&
+			exemplosTitulo.length < 30
+		) {
+			var coreDne = keys.coreName(row.comTipo);
+			var stripD = keys.stripTitulos(coreDne);
+			// cluster.name = name_norm OSM (sem display name no extract)
+			var osmNorm = row.cluster ? (row.cluster.name || '') : '';
+			var coreOsm = keys.coreName(osmNorm);
+			var stripO = keys.stripTitulos(coreOsm);
+			exemplosTitulo.push({
+				log_nu: row.log_nu,
+				dne_nome: (row.tlo + ' ' + row.log_no).trim(),
+				osm_name_norm: osmNorm,
+				localidade: loc.nome || '',
+				bairro: bai ? bai.nome : '',
+				cep: row.cep,
+				geo_regra: row.regra,
+				dne_nucleo: coreDne,
+				osm_nucleo: coreOsm,
+				nucleo_bare: stripD.bare,
+				tokens_removidos_dne: stripD.removed,
+				tokens_removidos_osm: stripO.removed,
+				candidatos: row.nCand
+			});
+		}
+		if (row.status === 'sem_nome_osm' && exemplosSemNome.length < 30) {
+			var coreSn = keys.coreName(row.comTipo);
+			var bareSn = keys.stripTitulos(coreSn);
+			exemplosSemNome.push({
+				log_nu: row.log_nu,
+				nome: (row.tlo + ' ' + row.log_no).trim(),
+				localidade: loc.nome || '',
+				bairro: bai ? bai.nome : '',
+				cep: row.cep,
+				cep5: String(row.cep || '').replace(/\D/g, '').slice(0, 5),
+				nucleo: coreSn,
+				nucleo_bare: bareSn.bare,
+				titulos_no_dne: bareSn.removed,
+				tlo: row.tlo
+			});
+		}
 		if (row.status === 'ambiguo') {
 			var mv = (row.motivo || 'desconhecido').replace(/_\d+km$/, '_longa');
 			porMotivo[mv] = (porMotivo[mv] || 0) + 1;
@@ -682,8 +784,12 @@ async function run(opts) {
 		cluster_cell: clusterCell,
 		footprint_cell: footprintCell,
 		linhas_dne: rows.length,
-		osm: { linhas: osm.lines, sem_geom: osm.semGeom, nomes: built.byName.size,
-			clusters: clusters.length, addr_extras: addrAdded },
+		osm: {
+			linhas: osm.lines, sem_geom: osm.semGeom, nomes: built.byName.size,
+			clusters: clusters.length, addr_extras: addrAdded,
+			mode: osm.mode || (semExtract ? 'missing' : 'flat'),
+			files: osm.files || 0
+		},
 		localidades: { total: localidades.size, com_footprint: footprints.size,
 			herdados_de_subordinacao: herdados, ancoras: ancoras },
 		geo_status: porStatus,
@@ -691,6 +797,8 @@ async function run(opts) {
 		ambiguo_por_motivo: porMotivo,
 		ambiguo_distancia_ate_a_mancha: distAmbiguo,
 		ambiguo_exemplos: exemplosAmbiguo,
+		titulo_exemplos: exemplosTitulo,
+		sem_nome_osm_exemplos: exemplosSemNome,
 		rodadas: stats.rodadas,
 		envelope_recuperados: stats.envelope_recuperados || 0,
 		clusters_multi_municipio: stats.clusters_multi_municipio || 0,
@@ -737,7 +845,9 @@ module.exports = {
 	parseCli: parseCli,
 	buildClusters: buildClusters,
 	buildDerivedIndexes: buildDerivedIndexes,
-	candidatesFor: candidatesFor
+	candidatesFor: candidatesFor,
+	resolveOsmLogradouro: resolveOsmLogradouro,
+	loadOsmStreets: loadOsmStreets
 };
 
 if (require.main === module) {

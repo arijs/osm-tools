@@ -230,6 +230,186 @@ function mergeAndSave(file, map, rows) {
 	writeCache(file, map);
 }
 
+// ---------------------------------------------------------------- multi-UF
+
+/** UFs com arquivo `CEP_EXTERNO_{UF}.TXT` (2 letras). Residual sem estado API → XX. */
+var UF_RE = /^[A-Z]{2}$/;
+
+function normalizeUfToken(uf) {
+	var u = String(uf == null ? '' : uf).trim().toUpperCase();
+	return UF_RE.test(u) ? u : '';
+}
+
+/** UF do registro (api_state) ou XX se vazio/inválido. */
+function rowUf(row) {
+	var u = normalizeUfToken(row && row.api_state);
+	return u || 'XX';
+}
+
+/**
+ * Caminho do cache de uma UF: `dir/CEP_EXTERNO_SP.TXT`.
+ * @param {string} dir
+ * @param {string} uf
+ */
+function cachePathForUf(dir, uf) {
+	var u = normalizeUfToken(uf) || 'XX';
+	return path.join(dir, 'CEP_EXTERNO_' + u + '.TXT');
+}
+
+/**
+ * Lista arquivos de cache em `dir`:
+ * - monólito `CEP_EXTERNO.TXT` (legado)
+ * - `CEP_EXTERNO_{UF}.TXT` (e XX)
+ * @param {string} dir
+ * @param {string[]|null} [ufs] se definido, só essas UFs (+ monólito se existir)
+ * @returns {{ path: string, uf: string|null, monolithic: boolean }[]}
+ */
+function listCacheFiles(dir, ufs) {
+	var out = [];
+	if (!dir || !fs.existsSync(dir)) return out;
+	var allow = null;
+	if (ufs && ufs.length) {
+		allow = Object.create(null);
+		for (var i = 0; i < ufs.length; i++) {
+			var u = normalizeUfToken(ufs[i]);
+			if (u) allow[u] = true;
+		}
+		allow.XX = true;
+	}
+	var names = fs.readdirSync(dir);
+	for (var n = 0; n < names.length; n++) {
+		var name = names[n];
+		if (!/^CEP_EXTERNO/i.test(name) || !/\.TXT$/i.test(name)) continue;
+		if (/RELATORIO/i.test(name)) continue;
+		var full = path.join(dir, name);
+		if (!fs.statSync(full).isFile()) continue;
+		var base = name.replace(/\.TXT$/i, '');
+		if (/^CEP_EXTERNO$/i.test(base)) {
+			out.push({ path: full, uf: null, monolithic: true });
+			continue;
+		}
+		var m = base.match(/^CEP_EXTERNO_([A-Za-z]{2})$/i);
+		if (!m) continue;
+		var uf = m[1].toUpperCase();
+		if (allow && !allow[uf]) continue;
+		out.push({ path: full, uf: uf, monolithic: false });
+	}
+	out.sort(function (a, b) {
+		var ka = a.monolithic ? '' : a.uf;
+		var kb = b.monolithic ? '' : b.uf;
+		return ka < kb ? -1 : ka > kb ? 1 : 0;
+	});
+	return out;
+}
+
+/**
+ * Carrega um ou mais arquivos de cache em um único Map(cep → row).
+ * Aceita:
+ * - caminho de arquivo (legado)
+ * - diretório (todos `CEP_EXTERNO*.TXT` / filtrados por `ufs`)
+ * @param {string} fileOrDir
+ * @param {{ ufs?: string[] }} [opts]
+ * @returns {Promise<Map<string, object>>}
+ */
+async function loadCacheMulti(fileOrDir, opts) {
+	opts = opts || {};
+	var map = new Map();
+	if (!fileOrDir) return map;
+
+	var files = [];
+	if (fs.existsSync(fileOrDir) && fs.statSync(fileOrDir).isDirectory()) {
+		files = listCacheFiles(fileOrDir, opts.ufs || null).map(function (f) {
+			return f.path;
+		});
+	} else if (fs.existsSync(fileOrDir)) {
+		files = [fileOrDir];
+	} else {
+		return map;
+	}
+
+	for (var i = 0; i < files.length; i++) {
+		var part = await loadCache(files[i]);
+		part.forEach(function (row, cep) {
+			map.set(cep, row);
+		});
+	}
+	return map;
+}
+
+/**
+ * Mescla `rows` no map e grava **um arquivo por UF** em `dir`
+ * (`CEP_EXTERNO_{UF}.TXT`). Só reescreve UFs tocadas pelas rows (e as que
+ * já estavam no map com aquele `api_state`).
+ *
+ * @param {string} dir
+ * @param {Map<string, object>} map
+ * @param {object[]} rows
+ * @returns {{ ufs: string[], files: string[], size: number }}
+ */
+function mergeAndSaveByUf(dir, map, rows) {
+	var touched = Object.create(null);
+	for (var i = 0; i < rows.length; i++) {
+		var r = rows[i];
+		var cep = digitsCep(r.cep);
+		if (!cep) continue;
+		r.cep = cep;
+		r._dirty = true;
+		delete r._raw;
+		map.set(cep, r);
+		touched[rowUf(r)] = true;
+	}
+	// reescreve cada UF tocada com **todas** as linhas do map daquela UF
+	var byUf = Object.create(null);
+	map.forEach(function (row) {
+		var uf = rowUf(row);
+		if (!byUf[uf]) byUf[uf] = new Map();
+		byUf[uf].set(row.cep, row);
+	});
+	var written = [];
+	var ufs = Object.keys(touched).sort();
+	for (var j = 0; j < ufs.length; j++) {
+		var uf = ufs[j];
+		var m = byUf[uf] || new Map();
+		var file = cachePathForUf(dir, uf);
+		writeCache(file, m);
+		written.push(file);
+	}
+	return { ufs: ufs, files: written, size: map.size };
+}
+
+/**
+ * Parte um monólito `CEP_EXTERNO.TXT` em `CEP_EXTERNO_{UF}.TXT` por `api_state`.
+ * @param {string} srcFile
+ * @param {string} outDir
+ * @param {{ removeSource?: boolean }} [opts]
+ * @returns {Promise<{ byUf: Object.<string, number>, total: number, files: string[] }>}
+ */
+async function splitCacheByUf(srcFile, outDir, opts) {
+	opts = opts || {};
+	var map = await loadCache(srcFile);
+	var byUf = Object.create(null);
+	map.forEach(function (row) {
+		var uf = rowUf(row);
+		if (!byUf[uf]) byUf[uf] = new Map();
+		byUf[uf].set(row.cep, row);
+	});
+	fs.mkdirSync(outDir || path.dirname(srcFile) || '.', { recursive: true });
+	var files = [];
+	var counts = Object.create(null);
+	var ufs = Object.keys(byUf).sort();
+	for (var i = 0; i < ufs.length; i++) {
+		var uf = ufs[i];
+		var file = cachePathForUf(outDir, uf);
+		writeCache(file, byUf[uf]);
+		files.push(file);
+		counts[uf] = byUf[uf].size;
+	}
+	if (opts.removeSource && fs.existsSync(srcFile)) {
+		fs.unlinkSync(srcFile);
+	}
+	return { byUf: counts, total: map.size, files: files };
+}
+
 module.exports = {
 	COLS: COLS,
 	FONTE_DEFAULT: FONTE_DEFAULT,
@@ -240,5 +420,12 @@ module.exports = {
 	loadCache: loadCache,
 	writeCache: writeCache,
 	appendRows: appendRows,
-	mergeAndSave: mergeAndSave
+	mergeAndSave: mergeAndSave,
+	normalizeUfToken: normalizeUfToken,
+	rowUf: rowUf,
+	cachePathForUf: cachePathForUf,
+	listCacheFiles: listCacheFiles,
+	loadCacheMulti: loadCacheMulti,
+	mergeAndSaveByUf: mergeAndSaveByUf,
+	splitCacheByUf: splitCacheByUf
 };
