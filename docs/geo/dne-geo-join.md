@@ -91,18 +91,37 @@ localidades do Sudeste; ignorar isso perde metade delas.
 Para cada linha do DNE, candidatos = clusters cujo nome bate **e** que caem no footprint do seu
 `loc_nu`. A regra de nome desce degrau a degrau, só no que sobrou:
 
-| `geo_regra` | Regra | Ganho medido (capital) |
-|-------------|-------|----------------------:|
-| `exato` | `name_norm` idêntico | 80,5 % |
-| `area` | idem, candidato `kind` ∈ {`square`,`park`}, só para `TLO_TX` de área | +2,1 pp |
-| `name_alt` | bate em `name_alt_norm` | +1,1 pp |
-| `addr` | bate em `addr:street` de `OSM_ADDR_POINT` | +0,1 pp |
-| `nucleo` | núcleo sem tipo de logradouro (DNE `Travessa Goiás` ↔ OSM `Rua Goiás`; TLO composto `Estrada Municipal X` → `X`) | +2,5 pp |
-| `fonetico` | chave fonética PT-BR (`z→s`, `y→i`, `ph→f`, `h` mudo, dobradas colapsadas) | +1,7 pp |
-| `titulo` | núcleo sem títulos/honrarias (`Doutor`, `Dr`, `Prof`, …) — DNE costuma omitir, OSM grava | a medir em re-join |
-| `titulo_fonetico` | `titulo` + chave fonética | a medir |
-| `vizinho_cep5` | nome casou, mas fora da pegada; único candidato a ≤ tol km de ≥N vias ok no mesmo CEP-5 (ou bairro) | a medir |
-| | **Total determinístico (sem título / CEP-5)** | **87,8 %** |
+Números abaixo: **SP estado**, re-join 2026-08 (`G:\dne-geo-br-join-sudeste`, OSM em shards,
+341 813 linhas DNE, 256 249 `ok` = **75,0 %**). A coluna “% das linhas” é sobre o DNE inteiro;
+“% do `ok`” é a fatia entre os casados. (A medição antiga só na capital — 80,5 % exato / 87,8 %
+determinístico — está em [melhoria-extracao-coordenadas.md](./melhoria-extracao-coordenadas.md)
+§8.5; não é comparável 1:1 com o estado.)
+
+| `geo_regra` | Regra | Linhas SP | % linhas | % do `ok` |
+|-------------|-------|----------:|---------:|----------:|
+| `exato` | `name_norm` idêntico | 232 722 | 68,1 % | 90,8 % |
+| `fonetico` | chave fonética PT-BR (`z→s`, `y→i`, `ph→f`, `h` mudo, dobradas colapsadas) | 7 962 | 2,3 % | 3,1 % |
+| `nucleo` | núcleo sem tipo (DNE `Travessa Goiás` ↔ OSM `Rua Goiás`; TLO composto `Estrada Municipal X` → `X` via `TIPO_MOD`) | 6 530 | 1,9 % | 2,5 % |
+| `name_alt` | bate em `name_alt_norm` | 4 321 | 1,3 % | 1,7 % |
+| `area` | como exato, candidato `kind` ∈ {`square`,`park`}, só para `TLO_TX` de área | 2 459 | 0,7 % | 1,0 % |
+| `titulo` | núcleo sem títulos/honrarias (`Doutor`, `Dr`, `Prof`, …) | 1 656 | 0,48 % | 0,65 % |
+| `vizinho_cep5` | nome casou, fora da pegada; 1 candidato a ≤1 km de ≥3 vias ok no mesmo CEP-5 (ou bairro) — fase 5e | 317 | 0,09 % | 0,12 % |
+| `titulo_fonetico` | `titulo` + chave fonética | 155 | 0,05 % | 0,06 % |
+| `addr` | bate em `addr:street` de `OSM_ADDR_POINT` | 127 | 0,04 % | 0,05 % |
+| | **Total `ok`** | **256 249** | **75,0 %** | **100 %** |
+
+Ordem da cascata (nome, ainda dentro do footprint):  
+`exato` → `area` → `name_alt` → `addr` → `nucleo` → `fonetico` → `titulo` → `titulo_fonetico`  
+…e depois das voltas de footprint: **envelope** (mantém a `geo_regra` de nome) e **`vizinho_cep5`**
+(grava `geo_regra=vizinho_cep5`).
+
+Leitura dos degraus novos (mesmo re-join):
+
+| Sinal | Linhas finais | Nota |
+|-------|--------------:|------|
+| `titulo` + `titulo_fonetico` | **1 811** (0,53 % do DNE) | Ex.: DNE `Rua Doutor Laurindo de Gênova` ↔ OSM `rua laurindo de genova` |
+| `vizinho_cep5` | **317** finais | **763** recuperados na fase 5e; o resto caiu na exclusão multi-município (5d) |
+| envelope | **6 719** | não tem `geo_regra` própria — entram como `exato`/`nucleo`/… |
 
 Fuzzy por distância de edição fica **fora** (atrás de `--fuzzy`): rendia +5,2 % bruto produzindo
 `flor de cereja` → `flor de cera` e `mércia` → `meca`.
@@ -113,7 +132,11 @@ tenente), comendador, vereador, prefeito, governador. **Fora:** santo/são (top�
 (barão, visconde… — fazem parte do nome). Só tokens **no início** do núcleo; “Mario Doutor Silva”
 não perde o meio.
 
-Exemplo: DNE `Olímpio Carr Ribeiro` + `TLO=Rua` ↔ OSM `Rua Doutor Olímpio Carr Ribeiro` →
+**TLO composto** (`TIPO_MOD`): após um tipo real, stripa `municipal` / `estadual` / `federal` /
+`vicinal` — DNE `TLO=Estrada Municipal` + `LOG_NO=Professora …` → núcleo `professora …` → bare
+`therezinha …` (não deixa `municipal` bloquear o título).
+
+Exemplo título: DNE `Olímpio Carr Ribeiro` + `TLO=Rua` ↔ OSM `Rua Doutor Olímpio Carr Ribeiro` →
 `geo_regra=titulo`.
 
 **Auditoria no relatório** (`DNE_GEO_RELATORIO_{UF}.json`):
@@ -121,6 +144,7 @@ Exemplo: DNE `Olímpio Carr Ribeiro` + `TLO=Rua` ↔ OSM `Rua Doutor Olímpio Ca
 - `titulo_exemplos` — até 30 matches `titulo` / `titulo_fonetico` com núcleos, tokens removidos e CEP
 - `vizinho_cep5_exemplos` — até 30 recuperações CEP-5/bairro (vizinhas, distâncias, `nome_regra`)
 - `sem_nome_osm_exemplos` — até 30 residual sem match (com `cep5` e núcleo bare) para amostrar o que falta
+- contadores: `envelope_recuperados`, `vizinho_cep5_recuperados` (pré-exclusão 5d)
 
 **Guarda kind-aware:** candidato de área só vale para `TLO_TX` ∈ {Praça, Largo, Parque, Jardim,
 Vila, Área}. Sem ela, `Rua Dois` casa com `Praça Dois` — são 2 584 colisões possíveis em SP.
@@ -218,7 +242,33 @@ Linhas sem casamento — coordenadas **vazias**, nunca chutadas:
 585089@SP@9668@25254@@César Ravasco@@04623020@Travessa@S@Tv César Ravasco@São Paulo@Brooklin Paulista@3550308@@@@@@@sem_nome_osm@@@0@0
 ```
 
-## Resultado (2026-07-30, `G:\dne-geo-local`)
+## Resultado
+
+### SP re-join 2026-08 (`G:\dne-geo-br-join-sudeste`, shards)
+
+| | Linhas | % |
+|--|-------:|--:|
+| DNE | 341 813 | 100 % |
+| `ok` | **256 249** | **75,0 %** |
+| `ambiguo` | 32 271 | 9,4 % |
+| `sem_nome_osm` | 53 293 | 15,6 % |
+
+OSM: 793 906 ways · 305 614 nomes · 431 827 clusters · 40 shards · 1 291 `addr` extras.
+
+Por regra (final, pós-exclusão 5d): `exato` 232 722 · `fonetico` 7 962 · `nucleo` 6 530 ·
+`name_alt` 4 321 · `area` 2 459 · `titulo` 1 656 · `vizinho_cep5` 317 · `titulo_fonetico` 155 ·
+`addr` 127.
+
+Recuperações espaciais: envelope **6 719** · vizinho_cep5 **763** (317 sobrevivem à 5d).
+Exclusão multi-município: **13 270** clusters em disputa → **16 567** linhas revogadas
+(`conflito_municipio`).
+
+Comparado ao SP de 2026-07-30 (`G:\dne-geo-local`, 77,1 % `ok`): `sem_nome_osm` caiu
+(56 054 → 53 293) com título/TLO composto; o `ok` global ficou um pouco menor porque a
+**exclusão multi-município** e o extract/shards atuais movem mais linhas para `ambiguo`
+(22 281 → 32 271, em grande parte `conflito_municipio`).
+
+### Sudeste 2026-07-30 (`G:\dne-geo-local`) — outras UFs
 
 | UF | Linhas DNE | `ok` | % | `ambiguo` | `sem_nome_osm` | ways OSM / linha DNE |
 |----|-----------:|-----:|--:|----------:|---------------:|---------------------:|
@@ -227,40 +277,42 @@ Linhas sem casamento — coordenadas **vazias**, nunca chutadas:
 | RJ | 103 723 | 74 588 | **71,9 %** | 8 001 | 21 134 | 1,97 |
 | MG | 128 929 | 70 582 | **54,7 %** | 13 812 | 44 535 | 1,48 |
 
-**Capital paulista: 88,6 %** (47 711 de 53 824) — acima da meta de 85 %.
+**Capital paulista (medição 2026-07-30): 88,6 %** (47 711 de 53 824) — acima da meta de 85 %.
 
-Por regra, em SP: `exato` 242 178 · `fonetico` 7 864 · `nucleo` 6 481 · `name_alt` 4 353 ·
-`area` 2 469 · `addr` 133.
-
-Duas leituras:
+Duas leituras que seguem válidas:
 
 - **MG em 54,7 % é limite de dado, não do algoritmo.** `sem_nome_osm` responde por 34,5 % das
   linhas, e MG tem a menor densidade de ways por linha DNE do Sudeste (1,48 contra 2,32 de SP): o
   interior mineiro está menos mapeado no OSM.
-- **`addr` rendeu 133 linhas em SP.** Confirma a medição anterior: como fonte de nome o dataset de
-  numeração é irrelevante. O que ele tem de valioso (`addr:postcode`, nomear way sem `name`)
-  continua sem uso.
+- **`addr` rendeu ~127 linhas em SP.** Como fonte de nome o dataset de numeração é irrelevante.
+  O que ele tem de valioso (`addr:postcode`, nomear way sem `name`) continua sem uso.
 
-Extensão média das vias casadas em SP: **0,61 km** — coerente com quadra urbana.
+Extensão média das vias casadas em SP (medição 2026-07-30): **0,61 km** — coerente com quadra urbana.
 
 ## O resíduo `ambiguo`
 
-O rótulo engana: quase nada ali é "dois candidatos igualmente bons".
+O rótulo mistura causas diferentes. **SP 2026-08** (`G:\dne-geo-br-join-sudeste`):
 
 | Motivo | Linhas | O que é |
 |--------|-------:|---------|
-| `fora_do_footprint` | 22 241 (99,8 %) | O nome casou em algum lugar da UF, mas nenhum cluster caiu na pegada daquele município |
+| `conflito_municipio` | **16 567** (51 %) | Cluster reivindicado por 2+ `loc_nu` — exclusão 5d deixou só o dono |
+| `fora_do_footprint` | 15 665 (49 %) | Nome casou na UF, nenhum cluster na pegada do município (pós-envelope/CEP-5) |
 | `extensao_longa` | 37 | Guarda de 15 km (encadeamento do single-link) |
-| `empate_de_tamanho` | 3 | Dois clusters com o mesmo peso — os únicos de fato ambíguos |
+| `empate_de_tamanho` | 2 | Dois clusters com o mesmo peso |
 
-Distância do melhor candidato à mancha de âncoras (`ambiguo_distancia_ate_a_mancha`):
+> Na medição 2026-07-30 (antes da exclusão 5d dominar o relatório), `fora_do_footprint` era
+> 99,8 % do `ambiguo`. Hoje metade do resíduo é **decisão deliberada** de não partilhar via
+> entre municípios.
+
+Distância do melhor candidato à mancha de âncoras (ainda útil no subconjunto
+`fora_do_footprint`; contagens 2026-08 incluem o que a 5d depois revogou durante o pipeline):
 
 | Distância | Linhas | Leitura |
 |-----------|-------:|---------|
-| até 1 km | **20 744 (93 %)** | Borda da própria cidade — loteamento novo, periferia, distrito longe da sede |
-| 1–5 km | 66 | idem |
-| 5–20 km | 364 | duvidoso |
-| > 20 km | 1 068 | homônimo de outro município — **rejeição correta** |
+| até 1 km | **21 072** | Borda / buraco de pegada — envelope e CEP-5 atacam daqui |
+| 1–5 km | 79 | idem |
+| 5–20 km | 373 | duvidoso |
+| > 20 km | 1 143 | homônimo de outro município — **rejeição correta** |
 
 **Amostra de 20 linhas por motivo, com a leitura de cada padrão:
 [amostras-ambiguo-sp.md](./amostras-ambiguo-sp.md).**
