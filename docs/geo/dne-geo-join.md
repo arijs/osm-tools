@@ -1,8 +1,9 @@
 # `dne-geo-join.js` — especificação
 
-> **Status: implementado e rodado no Sudeste (2026-07-30).** Código em
+> **Status: implementado.** Sudeste 2026-07-30; re-join SP com título/CEP-5/TLO composto em
+> 2026-08 (`G:\dne-geo-br-join-sudeste`). Código em
 > [`dne-geo-join.js`](../../dne-geo-join.js), [`name-keys.js`](../../name-keys.js),
-> [`geo-cluster.js`](../../geo-cluster.js). Resultado real em §Resultado.
+> [`geo-cluster.js`](../../geo-cluster.js). Resultado real em §Resultado e §Fase 4.
 > O diagnóstico que justifica cada decisão está em
 > [melhoria-extracao-coordenadas.md](./melhoria-extracao-coordenadas.md).
 
