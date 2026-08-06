@@ -17,6 +17,7 @@ Modelo de arquivo: **igual espírito DNE** — texto UTF-8, delimitador **`@`**,
 | `bairro` | `OSM_BAIRRO.TXT` | `place=suburb\|neighbourhood\|quarter` (e afins) |
 | `logradouro` | `OSM_LOGRADOURO_{UF}.TXT` | `name` (ou `name:pt`) **e** `highway=*` · `place=square` · `leisure=park\|garden` · `landuse=village_green` — way **ou** node |
 | `addr` / `--addr-points` | `OSM_ADDR_POINT_{UF}.TXT` | node com `addr:street` (opcional; **não** popular número global em massa) |
+| `geom` / `--way-geom` | `OSM_LOGRADOURO_GEOM_{UF}.TXT` | traçado das ways de logradouro (opcional; liga `logradouro` junto) |
 
 Default de datasets: estado + município + bairro + logradouro (`addr` off).
 
@@ -70,6 +71,12 @@ Detalhe completo no `README-colunas.md` gerado na saída.
 
 **Logradouro:**  
 `osm_id@name@name_norm@kind@uf@city@city_norm@suburb@suburb_norm@postcode@lat@lng@…@way_node_count@name_alt@name_alt_norm@osm_type`
+
+**Logradouro GEOM (opcional):**  
+`osm_id@polyline` — pontos separados por `;`, cada um `lat,lng` em unidades de **1e-6 grau**;
+o primeiro absoluto, os demais em **delta**. Só way com 2+ pontos distintos entra (toda linha
+desenha), e o alfabeto evita `@` de propósito — o sanitizador do writer o trocaria por espaço
+em silêncio. Spec: [geometria-via-destaque.md](./geometria-via-destaque.md).
 
 - `kind` (era `highway`): valor de `highway`, ou `square` / `park` para área.
 - `name_alt` / `name_alt_norm`: `alt_name`, `short_name`, `old_name`, `loc_name`, `name:pt-BR`, `official_name`, separados por `;`.

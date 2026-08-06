@@ -173,6 +173,11 @@ async function loadOsmStreets(osmDir, uf, quiet) {
 		var nn = p[2];
 		if (!nn) return;
 		var feat = {
+			// `id` = osm_id da way. Não participa de cluster nem de casamento —
+			// existe só para o cluster VENCEDOR poder dizer, na saída, de quais
+			// ways ele é feito. É o que deixa o consumidor buscar o traçado por
+			// id exato, em vez de recasar nome na hora de desenhar.
+			id: p[0] || '',
 			lat: lat, lng: lng,
 			latMin: num(p[12]) === null ? lat : num(p[12]),
 			latMax: num(p[13]) === null ? lat : num(p[13]),
@@ -791,6 +796,31 @@ async function run(opts) {
 	var logKey = 'DNE_GEO_LOGRADOURO_' + uf;
 	var f7 = function (v) { return v === null || v === undefined ? '' : Number(v).toFixed(7); };
 
+	/**
+	 * Ways do cluster vencedor, ordenadas e sem repetição — a coluna que deixa o
+	 * consumidor pegar o traçado por id exato (`OSM_LOGRADOURO_GEOM_{UF}`).
+	 *
+	 * Ponto de `addr:street` entra em cluster sem `id` (é nó de numeração, não
+	 * way, e não tem traçado nenhum): fica de fora em vez de virar um id que não
+	 * resolve do outro lado.
+	 *
+	 * Ordem numérica por determinismo — o mesmo insumo tem de dar byte a byte o
+	 * mesmo arquivo, como já vale para `kinds`.
+	 */
+	var waysDoCluster = function (cluster) {
+		if (!cluster || !cluster.feats) return '';
+		var vistos = Object.create(null);
+		var ids = [];
+		for (var w = 0; w < cluster.feats.length; w++) {
+			var id = cluster.feats[w].id;
+			if (!id || vistos[id]) continue;
+			vistos[id] = 1;
+			ids.push(id);
+		}
+		ids.sort(function (a, b) { return Number(a) - Number(b); });
+		return ids.join('+');
+	};
+
 	var porStatus = {}, porRegra = {}, bairroAgg = new Map();
 	// Diagnóstico do resíduo: `ambiguo` mistura causas com tratamentos diferentes.
 	var porMotivo = {}, exemplosAmbiguo = {}, distAmbiguo = {};
@@ -810,7 +840,8 @@ async function run(opts) {
 			a ? f7(a.latMin) : '', a ? f7(a.latMax) : '',
 			a ? f7(a.lngMin) : '', a ? f7(a.lngMax) : '',
 			row.status, row.regra, a ? a.kinds.join('+') : '',
-			a ? String(a.ways) : '0', String(row.nCand)
+			a ? String(a.ways) : '0', String(row.nCand),
+			waysDoCluster(row.cluster)
 		]);
 		porStatus[row.status] = (porStatus[row.status] || 0) + 1;
 		if (row.regra) porRegra[row.regra] = (porRegra[row.regra] || 0) + 1;

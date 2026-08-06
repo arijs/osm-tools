@@ -181,7 +181,7 @@ entrega e ordenação por distância — e não dá para distinguir depois.
 
 ## Contrato de saída
 
-`DNE_GEO_LOGRADOURO_{UF}.TXT` — UTF-8, delimitador `@`, sem header, 25 colunas:
+`DNE_GEO_LOGRADOURO_{UF}.TXT` — UTF-8, delimitador `@`, sem header, 26 colunas:
 
 ```
  1 log_nu           11 log_no_abrev      21 geo_status
@@ -189,7 +189,7 @@ entrega e ordenação por distância — e não dá para distinguir depois.
  3 loc_nu           13 bai_no            23 geo_kind
  4 bai_nu_ini       14 mun_nu (IBGE)     24 osm_ways
  5 bai_nu_fim       15 lat               25 osm_clusters
- 6 log_no           16 lng
+ 6 log_no           16 lng               26 osm_way_ids
  7 log_complemento  17 lat_min
  8 cep              18 lat_max
  9 tlo_tx           19 lng_min
@@ -202,6 +202,12 @@ entrega e ordenação por distância — e não dá para distinguir depois.
 - **22 `geo_regra`**: qual degrau da cascata casou — permite reprocessar só o que veio de regra fraca.
 - **23 `geo_kind`**: `kind`s do cluster, unidos por `+`. Auditoria: `park` numa Rua é sinal de erro.
 - **25 `osm_clusters`**: quantos clusters disputaram. `> 1` marca onde o desempate decidiu.
+- **26 `osm_way_ids`**: as ways do cluster vencedor, unidas por `+`, em ordem numérica. É a
+  chave para buscar o **traçado** em `OSM_LOGRADOURO_GEOM_{UF}` sem recasar nome — ver
+  [geometria-via-destaque.md](./geometria-via-destaque.md). Vazia quando `geo_status != ok`.
+  Ponto de `addr:street` não entra (é nó de numeração, não tem traçado). A coluna repete em
+  todas as linhas DNE que compartilham o cluster, e a cauda é longa: `Avenida Paulista` tem
+  207 ways, ~2,3 KB por linha.
 
 ## Exemplos de saída (dados reais)
 

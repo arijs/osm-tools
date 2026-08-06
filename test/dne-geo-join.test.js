@@ -229,7 +229,7 @@ test('dne-geo-join: cascata, footprint, guarda de área e status', async functio
 
 	var row = readOut(d.out, 'ZZ');
 	assert.equal(Object.keys(row).length, 16);
-	assert.equal(row['100'].length, 25, 'contrato de 25 colunas');
+	assert.equal(row['100'].length, 26, 'contrato de 26 colunas');
 
 	// --- desnormalização DNE
 	assert.equal(row['100'][11], 'Cidade A');
@@ -471,4 +471,64 @@ test('dne-geo-join: parseCli lê as opções', function () {
 	assert.equal(o.vizinhoCep5Min, 2);
 	assert.equal(o.semVizinhoCep5, true);
 	assert.equal(o.quiet, true);
+});
+
+test('dne-geo-join: coluna 26 traz as ways do cluster vencedor', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true
+	});
+	var row = readOut(d.out, 'ZZ');
+	var IDS = 25; // 0-based: coluna 26
+
+	// Linha que casou: os ids são exatamente as ways do cluster escolhido.
+	assert.equal(row['100'][20], 'ok');
+	assert.equal(row['100'][IDS], '1', 'Alfa Unica → way 1');
+
+	// Cluster com mais de uma way: ids em ordem numérica, sem repetição, e a
+	// contagem bate com a coluna osm_ways (24).
+	var comum = row['102'];
+	assert.equal(comum[20], 'ok');
+	var ids = comum[IDS].split('+');
+	assert.equal(ids.length, Number(comum[23]), 'osm_way_ids bate com osm_ways');
+	assert.deepEqual(ids.slice().sort(function (a, b) { return a - b; }), ids, 'ordem numérica');
+	assert.equal(new Set(ids).size, ids.length, 'sem repetição');
+
+	// Linha sem match não inventa ids.
+	var semMatch = Object.keys(row).map(function (k) { return row[k]; })
+		.find(function (r) { return r[20] !== 'ok'; });
+	assert.ok(semMatch, 'há linha sem match no fixture');
+	assert.equal(semMatch[IDS], '', 'geo_status != ok → coluna vazia');
+
+	// Determinismo: rodar de novo dá o mesmo byte.
+	var out2 = path.join(d.base, 'out2');
+	await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: out2, uf: 'ZZ', quiet: true
+	});
+	assert.equal(
+		fs.readFileSync(path.join(d.out, 'DNE_GEO_LOGRADOURO_ZZ.TXT'), 'utf8'),
+		fs.readFileSync(path.join(out2, 'DNE_GEO_LOGRADOURO_ZZ.TXT'), 'utf8')
+	);
+});
+
+test('dne-geo-join: ponto de addr:street não entra em osm_way_ids', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	// `OSM_ADDR_POINT_ZZ` só é consultado para nome que NENHUMA way tem — o ponto
+	// vira candidato sem `id`, e um id que não resolve do outro lado seria pior
+	// que coluna vazia.
+	fs.writeFileSync(
+		path.join(d.osm, 'OSM_ADDR_POINT_ZZ.TXT'),
+		[9001, A_LAT, A_LNG, 'Rua Inexistente', 'rua inexistente', '10', '', '', '', ''].join('@') + '\n',
+		'utf8'
+	);
+	await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true
+	});
+	var row = readOut(d.out, 'ZZ');
+	assert.equal(row['108'][20], 'ok', 'casou pelo ponto de numeração');
+	assert.equal(row['108'][25], '', 'sem way, sem id');
 });

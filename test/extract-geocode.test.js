@@ -13,6 +13,7 @@ var {
 	nameNorm
 } = require('../extract-geocode-pbf');
 var txtAt = require('../txt-at-writer');
+var polyline = require('../geo-polyline');
 
 var fixtures = path.join(__dirname, 'fixtures');
 var geoPbf = path.join(fixtures, 'geocode-mini.osm.pbf');
@@ -304,4 +305,120 @@ test('soft-stop via onControl para no blob atual (não completa o extract)', asy
 	assert.equal(result.stopReason, 'soft-stop');
 	assert.ok(elapsed < 5000, 'soft-stop deve ser rápido, levou ' + elapsed + 'ms');
 	rmrf(outStop);
+});
+test('--way-geom emite OSM_LOGRADOURO_GEOM_{UF} com o traçado da way', async function () {
+	ensureGeocodePbf();
+	var outGeom = path.join(fixtures, 'geocode-mini-out-geom');
+	rmrf(outGeom);
+
+	var result = await runExtractGeocode({
+		inputPath: geoPbf,
+		outDir: outGeom,
+		quiet: true,
+		resume: false,
+		datasets: parseDatasets('logradouro,geom')
+	});
+	assert.equal(result.error, null);
+
+	function rowsGeom(name) {
+		var p = path.join(outGeom, name);
+		if (!fs.existsSync(p)) return [];
+		return fs.readFileSync(p, 'utf8').split(/\r?\n/).filter(Boolean)
+			.map(function (l) { return l.split('@'); });
+	}
+
+	var logs = rowsGeom('OSM_LOGRADOURO_SP.TXT');
+	var geoms = rowsGeom('OSM_LOGRADOURO_GEOM_SP.TXT');
+	assert.ok(geoms.length >= 1, 'arquivo de geometria emitido');
+
+	// Todo id do GEOM existe no logradouro (o inverso não vale: nó e way sem
+	// traçado ficam de fora).
+	var idsLog = {};
+	logs.forEach(function (r) { idsLog[r[0]] = r; });
+	geoms.forEach(function (r) {
+		assert.ok(idsLog[r[0]], 'osm_id ' + r[0] + ' também está em OSM_LOGRADOURO_SP');
+		assert.ok(r[1].indexOf(';') > 0, 'polyline com 2+ pontos');
+	});
+
+	// Rua Augusta: way de 2 nós, resolvida na pass 2 → traçado com 2 pontos que
+	// batem com o centroide da linha principal.
+	var augustaLog = logs.find(function (r) { return r[1] === 'Rua Augusta'; });
+	assert.ok(augustaLog, 'Rua Augusta no extract');
+	var augustaGeom = geoms.find(function (r) { return r[0] === augustaLog[0]; });
+	assert.ok(augustaGeom, 'Rua Augusta tem traçado');
+	var pts = polyline.decodePolyline(augustaGeom[1]);
+	assert.equal(pts.length, 2);
+	var mLat = (pts[0][0] + pts[1][0]) / 2;
+	assert.ok(Math.abs(mLat - Number(augustaLog[10])) < 1e-6, 'centroide bate com a linha');
+
+	// Praça mapeada como NÓ não tem traçado; a praça como way fechada tem, e o
+	// anel fecha (primeiro ponto == último).
+	var pracaNode = logs.find(function (r) { return r[19] === 'node'; });
+	if (pracaNode) {
+		assert.ok(!geoms.some(function (r) { return r[0] === pracaNode[0]; }),
+			'nó não vira linha');
+	}
+	var pracaWay = logs.find(function (r) { return r[3] === 'square' && r[19] === 'way'; });
+	if (pracaWay) {
+		var anel = geoms.find(function (r) { return r[0] === pracaWay[0]; });
+		assert.ok(anel, 'praça como way tem traçado');
+		var pa = polyline.decodePolyline(anel[1]);
+		assert.deepEqual(pa[0], pa[pa.length - 1], 'anel fechado');
+	}
+
+	// Contadores no resumo.
+	assert.ok(result.counts.logradouroGeom >= 1);
+	assert.ok(result.counts.logradouroGeomPontos >= 2 * result.counts.logradouroGeom);
+
+	// README-colunas documenta o arquivo novo.
+	var readme = fs.readFileSync(path.join(outGeom, 'README-colunas.md'), 'utf8');
+	assert.ok(readme.indexOf('OSM_LOGRADOURO_GEOM_{UF}') >= 0);
+
+	rmrf(outGeom);
+});
+
+test('sem --way-geom nenhum arquivo de geometria é criado', async function () {
+	ensureGeocodePbf();
+	var outSem = path.join(fixtures, 'geocode-mini-out-sem-geom');
+	rmrf(outSem);
+	var result = await runExtractGeocode({
+		inputPath: geoPbf,
+		outDir: outSem,
+		quiet: true,
+		resume: false,
+		datasets: parseDatasets('logradouro')
+	});
+	assert.equal(result.error, null);
+	assert.ok(result.counts.logradouro >= 1);
+	var achou = fs.readdirSync(outSem).some(function (n) {
+		return n.indexOf('OSM_LOGRADOURO_GEOM') === 0;
+	});
+	assert.equal(achou, false, 'geometria é opt-in');
+	assert.equal(result.counts.logradouroGeom, 0);
+	rmrf(outSem);
+});
+
+test('geometria acompanha o fatiamento do logradouro, com MANIFEST próprio', async function () {
+	// `--shard-datasets=logradouro` casa o prefixo `OSM_LOGRADOURO`, então o
+	// arquivo de geometria fatia junto sem ninguém pedir. Vale fixar: o
+	// carregador do ddsoft resolve os dois pelo mesmo `resolveDatasetPaths`.
+	ensureGeocodePbf();
+	var outSh = path.join(fixtures, 'geocode-mini-out-geom-shard');
+	rmrf(outSh);
+	var result = await runExtractGeocode({
+		inputPath: geoPbf,
+		outDir: outSh,
+		quiet: true,
+		resume: false,
+		datasets: parseDatasets('logradouro,geom'),
+		shardLines: 2,
+		shardDatasets: ['logradouro']
+	});
+	assert.equal(result.error, null);
+
+	var res = txtAt.resolveDatasetPaths(outSh, 'OSM_LOGRADOURO_GEOM_SP');
+	assert.equal(res.mode, 'shard');
+	assert.ok(res.paths.length >= 1);
+	assert.equal(res.totalLines, result.counts.logradouroGeom);
+	rmrf(outSh);
 });

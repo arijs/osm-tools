@@ -5,7 +5,8 @@
  *
  * CLI:
  *   node extract-geocode-pbf.js [file.osm.pbf] --out=DIR
- *   --datasets=estado,municipio,bairro,logradouro[,addr]
+ *   --datasets=estado,municipio,bairro,logradouro[,addr][,geom]
+ *   --way-geom       (= --datasets=…,geom: OSM_LOGRADOURO_GEOM_{UF} com o traçado)
  *   --resume / --no-resume
  *   --node-cache=N   (default 500000)
  *   --shard-lines=N  (0=flat .TXT; N>0 → OSM_KEY/{N}-linhas/000001.txt + MANIFEST)
@@ -32,6 +33,7 @@ var dataSize = require('./datasize');
 var nameNorm = require('./name-norm').nameNorm;
 var ufBr = require('./uf-br');
 var txtAt = require('./txt-at-writer');
+var polyline = require('./geo-polyline');
 
 var DEFAULT_SOFT_STOP_MS = 30000;
 var DEFAULT_NODE_CACHE = 500000;
@@ -150,9 +152,17 @@ function geomFromPoint(lat, lon) {
 	};
 }
 
-function geomFromNodeIds(nodeIds, cache) {
+/**
+ * @param {Array<number>} nodeIds
+ * @param {{get: function}} cache
+ * @param {boolean} [coletarPontos] guarda a lista de coordenadas em `g.pontos`.
+ *   Opt-in porque a lista é lixo para quem só quer centroide/bbox — e esta
+ *   função roda para TODA way do PBF, não só para logradouro.
+ */
+function geomFromNodeIds(nodeIds, cache, coletarPontos) {
 	var g = emptyGeom();
 	g.way_node_count = nodeIds.length;
+	if (coletarPontos) g.pontos = [];
 	var sumLat = 0;
 	var sumLon = 0;
 	var n = 0;
@@ -165,6 +175,7 @@ function geomFromNodeIds(nodeIds, cache) {
 		if (!c) continue;
 		var lat = c[0];
 		var lon = c[1];
+		if (g.pontos) g.pontos.push([lat, lon]);
 		sumLat += lat;
 		sumLon += lon;
 		n++;
@@ -436,7 +447,11 @@ function processFeatureWay(ctx, way) {
 	var boundary = tags.boundary || '';
 	var place = tags.place || '';
 	var nodeIds = decodeWayRefs(way.refs);
-	var g = geomFromNodeIds(nodeIds, ctx.nodeCache);
+	// Com two-pass, a way de logradouro é AGENDADA e o `g` daqui não chega a
+	// virar linha — a geometria boa sai na pass 2, com os nós resolvidos. Coletar
+	// pontos aqui seria alocar uma lista por way, para todas as ways do PBF, e
+	// jogar fora. Sem two-pass (arquivo pequeno) o `g` é o que vai para a linha.
+	var g = geomFromNodeIds(nodeIds, ctx.nodeCache, ctx.wantGeom && !ctx.twoPassStreets);
 	var ibgeInfo = ufBr.extractIbge(tags);
 	var nn = nameNorm(name);
 
@@ -612,6 +627,39 @@ function writeLogradouroRow(ctx, osmType, wayId, tags, name, nn, g, ibgeInfo) {
 	]);
 	ctx.stats.logradouro++;
 	if (g.nodes_resolved === 0) ctx.stats.logradouroNoGeom++;
+	writeLogradouroGeomRow(ctx, uf, wayId, g);
+}
+
+/**
+ * Traçado da way, em arquivo IRMÃO do logradouro (`OSM_LOGRADOURO_GEOM_{UF}`).
+ *
+ * Irmão, e não uma coluna a mais na linha de logradouro, por dois motivos: o
+ * `dne-geo-join.js` lê o arquivo de logradouro inteiro e não tem uso nenhum
+ * para geometria (pagaria ~3× o I/O à toa), e quem quer só o traçado — o
+ * carregador do ddsoft — não precisa varrer 20 colunas de nome e bbox.
+ *
+ * Fica na MESMA UF e passa pelo MESMO filtro do logradouro porque só é chamado
+ * depois que a linha principal foi escrita: um id aqui sempre existe lá.
+ *
+ * Menos de dois pontos distintos não vira linha — praça mapeada como nó, way
+ * cujos nós não foram resolvidos, way degenerada. Fica de fora e é contada, em
+ * vez de virar uma linha vazia que o consumidor teria de filtrar.
+ */
+function writeLogradouroGeomRow(ctx, uf, wayId, g) {
+	if (!ctx.wantGeom) return;
+	if (!g || !g.pontos || g.pontos.length < 2) {
+		ctx.stats.logradouroGeomVazio++;
+		return;
+	}
+	var linha = polyline.encodePolyline(g.pontos);
+	if (!linha || linha.indexOf(polyline.SEP_PONTO) < 0) {
+		// Todos os nós colapsaram no mesmo ponto após o arredondamento.
+		ctx.stats.logradouroGeomVazio++;
+		return;
+	}
+	ctx.writer.write('OSM_LOGRADOURO_GEOM_' + (uf || 'XX'), [wayId, linha]);
+	ctx.stats.logradouroGeom++;
+	ctx.stats.logradouroGeomPontos += polyline.countPolyline(linha);
 }
 
 /**
@@ -625,7 +673,7 @@ function emitPendingStreets(ctx) {
 	};
 	for (var i = 0; i < ctx.pendingStreets.length; i++) {
 		var w = ctx.pendingStreets[i];
-		var g = geomFromNodeIds(w.nodeIds, streetCache);
+		var g = geomFromNodeIds(w.nodeIds, streetCache, ctx.wantGeom);
 		var ibgeInfo = ufBr.extractIbge(w.tags);
 		writeLogradouroRow(ctx, 'way', w.id, w.tags, w.name, w.nn, g, ibgeInfo);
 	}
@@ -1039,6 +1087,17 @@ function formatExtractSummary(stats) {
 			')'
 	);
 	if (stats.addr) parts.push('Addr: ' + stats.addr);
+	if (stats.logradouroGeom) {
+		parts.push(
+			'Geom: ' +
+				stats.logradouroGeom +
+				' vias, ' +
+				(stats.logradouroGeomPontos || 0) +
+				' pontos (sem traçado: ' +
+				(stats.logradouroGeomVazio || 0) +
+				')'
+		);
+	}
 	if (stats.streetWaves) parts.push('waves=' + stats.streetWaves);
 	return parts.join(' | ');
 }
@@ -1049,7 +1108,8 @@ function parseDatasets(str) {
 		municipio: true,
 		bairro: true,
 		logradouro: true,
-		addr: false
+		addr: false,
+		geom: false
 	};
 	if (!str || str === 'all') return all;
 	var out = {
@@ -1057,14 +1117,20 @@ function parseDatasets(str) {
 		municipio: false,
 		bairro: false,
 		logradouro: false,
-		addr: false
+		addr: false,
+		geom: false
 	};
 	var parts = String(str).split(/[,+\s]+/);
 	for (var i = 0; i < parts.length; i++) {
 		var p = parts[i].toLowerCase().trim();
 		if (p === 'addr' || p === 'addr_point' || p === 'addrpoint') out.addr = true;
+		else if (p === 'geom' || p === 'way_geom' || p === 'waygeom') out.geom = true;
 		else if (out[p] !== undefined) out[p] = true;
 	}
+	// `geom` é o traçado DAS WAYS DE LOGRADOURO: sem o dataset que as emite ele
+	// não teria de onde sair. Ligar junto evita a saída silenciosamente vazia de
+	// `--datasets=geom`, que ninguém escreve querendo nada.
+	if (out.geom && !out.logradouro) out.logradouro = true;
 	return out;
 }
 
@@ -1106,6 +1172,20 @@ function writeReadmeColunas(outDir, opts) {
 		'**Match kind-aware:** candidato `square`/`park` só vale para linha DNE com ' +
 		'`TLO_TX` de área (Praça, Largo, Parque, Jardim, Vila, Área). Sem essa guarda, ' +
 		'`Parque Villa-Lobos` casa com `Rua Villa-Lobos`.\n\n' +
+		'## OSM_LOGRADOURO_GEOM_{UF} (opcional, `--way-geom`)\n\n' +
+		'`osm_id@polyline`\n\n' +
+		'Traçado da way, para desenhar a via no mapa sem casar nome em runtime.\n' +
+		'Irmão de `OSM_LOGRADOURO_{UF}`: mesma UF, mesmo filtro, e todo `osm_id` ' +
+		'daqui existe lá (o inverso não vale).\n\n' +
+		'- `polyline`: pontos separados por `;`, cada um `lat,lng` em **unidades de ' +
+		'1e-6 grau** (inteiros). O primeiro é absoluto, os demais são **deltas** do ' +
+		'anterior: `-23552000,-46632000;-1000,-1000`.\n' +
+		'- Só entra way com **2+ pontos distintos** após o arredondamento. Praça ' +
+		'mapeada como nó, way sem nó resolvido e way degenerada ficam de fora — ' +
+		'toda linha do arquivo desenha.\n' +
+		'- Way fechada (praça, parque) repete o primeiro ponto no fim: o anel fecha.\n' +
+		'- **Não** há simplificação (Douglas-Peucker): a única perda é o ' +
+		'arredondamento (~0,11 m).\n\n' +
 		'## OSM_ADDR_POINT_{UF} (opcional)\n\n' +
 		'`osm_id@lat@lng@street@street_norm@housenumber@city@suburb@postcode@name`\n\n' +
 		'Docs: `docs/geo/extract-e-artefatos.md`\n';
@@ -1255,6 +1335,9 @@ function runExtractGeocode(options) {
 		var ctx = {
 			writer: writer,
 			datasets: datasets,
+			// Atalho para o caminho quente: `geomFromNodeIds` roda para toda way
+			// do PBF e a checagem entra no laço de nós.
+			wantGeom: wantDataset(datasets, 'geom'),
 			twoPassStreets: twoPassStreets,
 			twoPassGeometry: twoPassGeometry,
 			ufAllow: ufAllow,
@@ -1277,6 +1360,9 @@ function runExtractGeocode(options) {
 					logradouro: 0,
 					logradouroPending: 0,
 					logradouroNoGeom: 0,
+					logradouroGeom: 0,
+					logradouroGeomVazio: 0,
+					logradouroGeomPontos: 0,
 					logradouroSkippedFilter: 0,
 					streetNodesResolved: 0,
 					streetWaves: 0,
@@ -1645,6 +1731,10 @@ function parseCli(argv) {
 		} else if (a === '--addr-points') {
 			opts.datasets = opts.datasets || parseDatasets('all');
 			opts.datasets.addr = true;
+		} else if (a === '--way-geom') {
+			opts.datasets = opts.datasets || parseDatasets('all');
+			opts.datasets.geom = true;
+			opts.datasets.logradouro = true;
 		} else if (a.indexOf('-') === 0) {
 			// ignore unknown flags
 		} else {
