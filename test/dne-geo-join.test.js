@@ -440,6 +440,126 @@ test('dne-geo-join: --sem-vizinho-cep5 deixa fora_do_footprint vazio', async fun
 	assert.equal(rel.vizinho_cep5_recuperados || 0, 0);
 });
 
+/**
+ * Caso Neuchatel: homônimo em 2 municípios, 2 clusters OSM (~8 km).
+ * Desempate por tamanho escolhe o cluster pesado (vizinho); exclusão 5d dá
+ * esse cluster ao município vizinho; fase 5f recupera o cluster leve via CEP-5.
+ */
+function setupNeuchatelDirs() {
+	var base = fs.mkdtempSync(path.join(os.tmpdir(), 'dne-geo-neu-'));
+	var dne = path.join(base, 'dne');
+	var osm = path.join(base, 'osm');
+	var out = path.join(base, 'out');
+	fs.mkdirSync(dne);
+	fs.mkdirSync(osm);
+
+	var loc = [
+		'1@ZZ@Sao Paulo@@1@M@@S Paulo@3550308',
+		'3@ZZ@Sao Bernardo@@1@M@@S Bernardo@3548708'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOCALIDADE.TXT'), Buffer.from(loc, 'latin1'));
+
+	var bai = [
+		'10@ZZ@1@Capela do Socorro@Capela Socorro',
+		'13@ZZ@3@Taboao@Taboao'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_BAIRRO.TXT'), Buffer.from(bai, 'latin1'));
+
+	// OESTE ≈ Capela (CEP 04781); LESTE ≈ Taboão SBC (CEP 09663), ~8 km
+	var WEST_LAT = A_LAT, WEST_LNG = A_LNG;
+	var EAST_LAT = A_LAT, EAST_LNG = A_LNG + 0.08;
+
+	var log = [
+		// footprint de SP cobre os dois polos (âncoras únicas)
+		'400@ZZ@1@10@@Alfa Capela@@04781001@Rua@S@R Alfa Capela',
+		'401@ZZ@1@10@@Beta Leste@@04782001@Rua@S@R Beta Leste',
+		// vizinhas CEP-5 04781 só no oeste
+		'402@ZZ@1@10@@Vizinha Capela Um@@04781010@Rua@S@R Vizinha Capela Um',
+		'403@ZZ@1@10@@Vizinha Capela Dois@@04781020@Rua@S@R Vizinha Capela Dois',
+		'404@ZZ@1@10@@Vizinha Capela Tres@@04781040@Rua@S@R Vizinha Capela Tres',
+		// alvo SP — mesmo nome que SBC
+		'606476@ZZ@1@10@@Neuchatel@@04781030@Rua@S@R Neuchatel',
+		// SBC: footprint + CEP-5 09663 no leste
+		'410@ZZ@3@13@@Gama Taboao@@09663001@Rua@S@R Gama Taboao',
+		'411@ZZ@3@13@@Vizinha Taboao Um@@09663010@Rua@S@R Vizinha Taboao Um',
+		'412@ZZ@3@13@@Vizinha Taboao Dois@@09663011@Rua@S@R Vizinha Taboao Dois',
+		'413@ZZ@3@13@@Vizinha Taboao Tres@@09663012@Rua@S@R Vizinha Taboao Tres',
+		'564372@ZZ@3@13@@Neuchatel@@09663020@Rua@S@R Neuchatel'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOGRADOURO_ZZ.TXT'), Buffer.from(log, 'latin1'));
+
+	var ways = [
+		osmRow(1, 'Rua Alfa Capela', 'rua alfa capela', 'residential', WEST_LAT, WEST_LNG),
+		osmRow(2, 'Rua Beta Leste', 'rua beta leste', 'residential', EAST_LAT, EAST_LNG),
+		osmRow(3, 'Rua Vizinha Capela Um', 'rua vizinha capela um', 'residential',
+			WEST_LAT - 0.001, WEST_LNG),
+		osmRow(4, 'Rua Vizinha Capela Dois', 'rua vizinha capela dois', 'residential',
+			WEST_LAT + 0.001, WEST_LNG - 0.001),
+		osmRow(5, 'Rua Vizinha Capela Tres', 'rua vizinha capela tres', 'residential',
+			WEST_LAT - 0.0005, WEST_LNG + 0.001),
+		// cluster oeste leve; leste pesado → desempate por tamanho pega o de SBC
+		osmRow(6, 'Rua Neuchatel', 'rua neuchatel', 'residential', WEST_LAT, WEST_LNG + 0.0003, 4),
+		osmRow(7, 'Rua Neuchatel', 'rua neuchatel', 'residential', EAST_LAT, EAST_LNG - 0.0003, 40),
+		osmRow(8, 'Rua Gama Taboao', 'rua gama taboao', 'residential', EAST_LAT + 0.001, EAST_LNG),
+		osmRow(9, 'Rua Vizinha Taboao Um', 'rua vizinha taboao um', 'residential',
+			EAST_LAT - 0.001, EAST_LNG + 0.001),
+		osmRow(10, 'Rua Vizinha Taboao Dois', 'rua vizinha taboao dois', 'residential',
+			EAST_LAT + 0.0005, EAST_LNG - 0.001),
+		osmRow(11, 'Rua Vizinha Taboao Tres', 'rua vizinha taboao tres', 'residential',
+			EAST_LAT - 0.0005, EAST_LNG + 0.0005)
+	].join('\n');
+	fs.writeFileSync(path.join(osm, 'OSM_LOGRADOURO_ZZ.TXT'), ways, 'utf8');
+
+	return {
+		base: base, dne: dne, osm: osm, out: out,
+		WEST_LAT: WEST_LAT, WEST_LNG: WEST_LNG,
+		EAST_LAT: EAST_LAT, EAST_LNG: EAST_LNG
+	};
+}
+
+test('dne-geo-join: pós-conflito CEP-5 recupera homônimo (caso Neuchatel)', async function (t) {
+	var d = setupNeuchatelDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true
+	});
+	var row = readOut(d.out, 'ZZ');
+
+	// SBC fica com o cluster leste (mais pesado / mais perto das âncoras dele)
+	assert.equal(row['564372'][20], 'ok');
+	assert.ok(Math.abs(Number(row['564372'][14]) - d.EAST_LAT) < 0.01,
+		'SBC deve ficar no cluster leste, veio lat=' + row['564372'][14]);
+
+	// SP perde o leste na 5d, mas a 5f devolve o oeste via CEP-5 04781
+	assert.equal(row['606476'][20], 'ok', 'SP recuperado pós-conflito');
+	assert.equal(row['606476'][21], 'vizinho_cep5');
+	assert.ok(Math.abs(Number(row['606476'][14]) - d.WEST_LAT) < 0.01,
+		'SP deve ficar no cluster oeste (Capela), veio lat=' + row['606476'][14]);
+	assert.ok(rel.vizinho_cep5_pos_conflito_recuperados >= 1);
+	assert.ok((rel.vizinho_cep5_pos_conflito_exemplos || []).some(function (e) {
+		return e.log_nu === '606476' && e.fase === 'pos_conflito' && e.fonte === 'cep5';
+	}));
+	assert.ok((rel.vizinho_cep5_exemplos || []).some(function (e) {
+		return e.log_nu === '606476' && e.fase === 'pos_conflito';
+	}));
+});
+
+test('dne-geo-join: --sem-vizinho-cep5 não recupera pós-conflito', async function (t) {
+	var d = setupNeuchatelDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		semVizinhoCep5: true
+	});
+	var row = readOut(d.out, 'ZZ');
+	assert.equal(row['564372'][20], 'ok', 'SBC ainda ganha a exclusão');
+	assert.equal(row['606476'][20], 'ambiguo', 'SP fica revogado sem 5f');
+	assert.equal(row['606476'][14], '');
+	assert.equal(rel.vizinho_cep5_pos_conflito_recuperados || 0, 0);
+});
+
 test('digitsCep5 e nearestDistKm', function () {
 	assert.equal(join.digitsCep5('04775-120'), '04775');
 	assert.equal(join.digitsCep5('04775120'), '04775');

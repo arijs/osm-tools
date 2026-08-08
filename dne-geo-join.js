@@ -18,9 +18,9 @@
  *     --footprint-dilate=1  células de halo na pegada municipal
  *     --envelope-tol-km=1   recupera fora_do_footprint com 1 candidato a ≤N km da mancha
  *     --sem-envelope        desliga a recuperação por envelope
- *     --vizinho-cep5-tol-km=1  recupera fora_do_footprint por vizinhança CEP-5 (km)
+ *     --vizinho-cep5-tol-km=1  recupera fora_do_footprint e pós-conflito por CEP-5 (km)
  *     --vizinho-cep5-min=3    mínimo de vias ok no mesmo CEP-5 (ou bairro)
- *     --sem-vizinho-cep5    desliga a recuperação por vizinhança CEP-5
+ *     --sem-vizinho-cep5    desliga a recuperação por vizinhança CEP-5 (5e e 5f)
  *     --sem-exclusao-cluster desliga a exclusividade de cluster entre municípios
  *     --quiet
  */
@@ -39,10 +39,11 @@ var REGRAS = [
 ];
 
 // A "âncora local" antiga (centroide + raio = max dist) foi medida e removida:
-// rendia ~36 linhas e o raio explodia com outliers. A fase 5e (vizinho CEP-5)
-// é outra coisa: distância ao **vizinho mais próximo** já ok no mesmo CEP-5
-// (fallback: bairro), só no resíduo `fora_do_footprint`, candidato único.
-// Ver docs/geo/amostras-ambiguo-sp.md e docs/geo/dne-geo-join.md §Fase 5e.
+// rendia ~36 linhas e o raio explodia com outliers. As fases 5e/5f (vizinho CEP-5)
+// usam distância ao **vizinho mais próximo** já ok no mesmo CEP-5 (fallback: bairro),
+// candidato único: 5e no resíduo `fora_do_footprint`; 5f após exclusão multi-município
+// no resíduo `conflito_municipio` (cluster alternativo livre perto do CEP-5/bairro).
+// Ver docs/geo/amostras-ambiguo-sp.md e docs/geo/dne-geo-join.md §Fase 5e/5f.
 
 function digitsCep5(cep) {
 	var d = String(cep || '').replace(/\D/g, '');
@@ -57,6 +58,98 @@ function nearestDistKm(lat, lng, pts) {
 		if (d < best) best = d;
 	}
 	return best;
+}
+
+/** Índice de vias já `ok` por `loc_nu|CEP-5` e por `bai_nu` (âncoras de vizinhança). */
+function indexVizinhoAnchors(rows) {
+	var byCep5Loc = new Map();
+	var byBaiNu = new Map();
+	for (var i = 0; i < rows.length; i++) {
+		var r = rows[i];
+		if (r.status !== 'ok' || !r.cluster) continue;
+		var pt = {
+			lat: r.cluster.agg.lat,
+			lng: r.cluster.agg.lng,
+			log_nu: r.log_nu,
+			log_no: r.log_no
+		};
+		var c5 = digitsCep5(r.cep);
+		if (c5) {
+			var ck = r.loc_nu + '|' + c5;
+			var ca = byCep5Loc.get(ck);
+			if (ca) ca.push(pt); else byCep5Loc.set(ck, [pt]);
+		}
+		if (r.bai_ini) {
+			var ba = byBaiNu.get(r.bai_ini);
+			if (ba) ba.push(pt); else byBaiNu.set(r.bai_ini, [pt]);
+		}
+	}
+	return { byCep5Loc: byCep5Loc, byBaiNu: byBaiNu };
+}
+
+/**
+ * Âncoras de vizinhança para uma linha: CEP-5 no mesmo município, senão bairro.
+ * Exige ≥ min pontos. Devolve null se insuficiente.
+ */
+function anchorsForRow(row, idxAnch, min) {
+	var fonte = 'cep5';
+	var anchors = null;
+	var c5 = digitsCep5(row.cep);
+	if (c5) anchors = idxAnch.byCep5Loc.get(row.loc_nu + '|' + c5) || null;
+	if (!anchors || anchors.length < min) {
+		anchors = row.bai_ini ? (idxAnch.byBaiNu.get(row.bai_ini) || null) : null;
+		fonte = 'bairro';
+	}
+	if (!anchors || anchors.length < min) return null;
+	return { anchors: anchors, fonte: fonte, cep5: c5 };
+}
+
+/**
+ * Entre candidatos de nome, fica quem está a ≤ tolKm do vizinho mais próximo
+ * e com extensão ok. Se `ownerOf` for passado, ignora cluster cujo dono é outro
+ * `loc_nu`. Aceita só se sobrar exatamente 1.
+ * Devolve { clusterIdx, dist, nCandConsiderados } ou null.
+ */
+function pickVizinhoUnico(candIdxs, clusters, anchors, tolKm, maxExtentKm, rowLocNu, ownerOf) {
+	var perto = [];
+	for (var i = 0; i < candIdxs.length; i++) {
+		var ci = candIdxs[i];
+		if (ownerOf) {
+			var own = ownerOf.get(ci);
+			if (own !== undefined && own !== rowLocNu) continue;
+		}
+		var ag = clusters[ci].agg;
+		var d = nearestDistKm(ag.lat, ag.lng, anchors);
+		if (d > tolKm) continue;
+		var ext = Math.max(
+			(ag.latMax - ag.latMin) * 111,
+			(ag.lngMax - ag.lngMin) * 102
+		);
+		if (ext > maxExtentKm) continue;
+		perto.push({ idx: ci, dist: d });
+	}
+	if (perto.length !== 1) return null;
+	return {
+		clusterIdx: perto[0].idx,
+		dist: perto[0].dist,
+		nCandConsiderados: candIdxs.length
+	};
+}
+
+/** Top-N vizinhas mais próximas de (lat,lng) para auditoria. */
+function topVizinhos(lat, lng, anchors, n) {
+	var sorted = anchors.slice().sort(function (a, b) {
+		return geo.distKm(lat, lng, a.lat, a.lng) - geo.distKm(lat, lng, b.lat, b.lng);
+	});
+	var out = [];
+	for (var i = 0; i < sorted.length && i < n; i++) {
+		out.push({
+			log_nu: sorted[i].log_nu,
+			log_no: sorted[i].log_no,
+			dist_km: Math.round(geo.distKm(lat, lng, sorted[i].lat, sorted[i].lng) * 1000) / 1000
+		});
+	}
+	return out;
 }
 
 function readLines(file, encoding, onLine) {
@@ -618,73 +711,21 @@ async function run(opts) {
 		var vizinhoOk = 0;
 		var exemplosVizinho = [];
 		if (useVizinhoCep5 && vizinhoCep5TolKm > 0 && vizinhoCep5Min > 0) {
-			var byCep5Loc = new Map(); // loc_nu|cep5 -> [{lat,lng,log_nu,log_no}]
-			var byBaiNu = new Map();   // bai_nu -> idem
-			for (var vi = 0; vi < rows.length; vi++) {
-				var rv = rows[vi];
-				if (rv.status !== 'ok' || !rv.cluster) continue;
-				var pt = {
-					lat: rv.cluster.agg.lat,
-					lng: rv.cluster.agg.lng,
-					log_nu: rv.log_nu,
-					log_no: rv.log_no
-				};
-				var c5 = digitsCep5(rv.cep);
-				if (c5) {
-					var ck = rv.loc_nu + '|' + c5;
-					var ca = byCep5Loc.get(ck);
-					if (ca) ca.push(pt); else byCep5Loc.set(ck, [pt]);
-				}
-				if (rv.bai_ini) {
-					var ba = byBaiNu.get(rv.bai_ini);
-					if (ba) ba.push(pt); else byBaiNu.set(rv.bai_ini, [pt]);
-				}
-			}
+			var idxV5 = indexVizinhoAnchors(rows);
 			for (var v5 = 0; v5 < rows.length; v5++) {
 				var rV = rows[v5];
 				if (rV.status !== 'ambiguo' || rV.motivo !== 'fora_do_footprint') continue;
 				var gotV = cascadeCandidates(rV, idx, clusters);
 				if (!gotV.cand.length) continue;
-				var fonte = 'cep5';
-				var anchors = null;
-				var c5r = digitsCep5(rV.cep);
-				if (c5r) anchors = byCep5Loc.get(rV.loc_nu + '|' + c5r) || null;
-				if (!anchors || anchors.length < vizinhoCep5Min) {
-					anchors = rV.bai_ini ? (byBaiNu.get(rV.bai_ini) || null) : null;
-					fonte = 'bairro';
-				}
-				if (!anchors || anchors.length < vizinhoCep5Min) continue;
-				var pertoV = [];
-				for (var pv = 0; pv < gotV.cand.length; pv++) {
-					var agV = clusters[gotV.cand[pv]].agg;
-					var dV = nearestDistKm(agV.lat, agV.lng, anchors);
-					if (dV <= vizinhoCep5TolKm) {
-						pertoV.push({ idx: gotV.cand[pv], dist: dV });
-					}
-				}
-				if (pertoV.length !== 1) continue;
-				var alvoV = clusters[pertoV[0].idx];
-				var agVV = alvoV.agg;
-				var extV = Math.max(
-					(agVV.latMax - agVV.latMin) * 111,
-					(agVV.lngMax - agVV.lngMin) * 102
+				var ancV = anchorsForRow(rV, idxV5, vizinhoCep5Min);
+				if (!ancV) continue;
+				var pickV = pickVizinhoUnico(
+					gotV.cand, clusters, ancV.anchors, vizinhoCep5TolKm, maxExtentKm,
+					rV.loc_nu, null
 				);
-				if (extV > maxExtentKm) continue;
-				// top-3 vizinhas para auditoria
-				var vizSorted = anchors.slice().sort(function (a, b) {
-					return geo.distKm(agVV.lat, agVV.lng, a.lat, a.lng) -
-						geo.distKm(agVV.lat, agVV.lng, b.lat, b.lng);
-				});
-				var vizTop = [];
-				for (var vt = 0; vt < vizSorted.length && vt < 3; vt++) {
-					vizTop.push({
-						log_nu: vizSorted[vt].log_nu,
-						log_no: vizSorted[vt].log_no,
-						dist_km: Math.round(
-							geo.distKm(agVV.lat, agVV.lng, vizSorted[vt].lat, vizSorted[vt].lng) * 1000
-						) / 1000
-					});
-				}
+				if (!pickV) continue;
+				var alvoV = clusters[pickV.clusterIdx];
+				var agVV = alvoV.agg;
 				rV.cluster = alvoV;
 				rV.motivo = '';
 				rV.regra = 'vizinho_cep5';
@@ -692,24 +733,25 @@ async function run(opts) {
 				rV.nCand = gotV.cand.length;
 				rV.via_vizinho_cep5 = true;
 				rV.nome_regra = gotV.regra;
-				rV.vizinho_fonte = fonte;
-				rV.vizinho_n = anchors.length;
-				rV.vizinho_dist = pertoV[0].dist;
+				rV.vizinho_fonte = ancV.fonte;
+				rV.vizinho_n = ancV.anchors.length;
+				rV.vizinho_dist = pickV.dist;
 				vizinhoOk++;
 				if (exemplosVizinho.length < 30) {
 					exemplosVizinho.push({
 						log_nu: rV.log_nu,
 						dne_nome: (rV.tlo + ' ' + rV.log_no).trim(),
 						cep: rV.cep,
-						cep5: c5r,
+						cep5: ancV.cep5,
 						localidade: (localidades.get(rV.loc_nu) || {}).nome || '',
 						geo_regra: 'vizinho_cep5',
 						nome_regra: gotV.regra,
-						fonte: fonte,
-						n_vizinhos: anchors.length,
-						dist_vizinho_km: Math.round(pertoV[0].dist * 1000) / 1000,
+						fonte: ancV.fonte,
+						fase: 'fora_do_footprint',
+						n_vizinhos: ancV.anchors.length,
+						dist_vizinho_km: Math.round(pickV.dist * 1000) / 1000,
 						n_cand_nome: gotV.cand.length,
-						vizinhos: vizTop
+						vizinhos: topVizinhos(agVV.lat, agVV.lng, ancV.anchors, 3)
 					});
 				}
 				var bbV = porBairro.get(rV.bai_ini);
@@ -787,6 +829,84 @@ async function run(opts) {
 		stats.clusters_multi_municipio = clustersMulti;
 		stats.linhas_em_cluster_multi = multiAntes;
 		stats.revogados_conflito_municipio = revogados;
+
+		// ---- Fase 5f: vizinhança CEP-5 após conflito_municipio
+		// Homônimo intermunicipal: o perdedor da 5d às vezes tem outro cluster
+		// (a via da própria cidade) que o desempate por tamanho não escolheu.
+		// Reusa a mesma regra da 5e, mas só em clusters ainda livres (ou já deste loc_nu).
+		// Caso motivador: Rua Neuchatel SP (606476) vs SBC — cluster oeste órfão.
+		var vizinhoPos = 0;
+		var exemplosPos = [];
+		if (useVizinhoCep5 && useExclusao && vizinhoCep5TolKm > 0 && vizinhoCep5Min > 0) {
+			var idxPos = indexVizinhoAnchors(rows);
+			var ownerPos = new Map(); // clusterId -> loc_nu dono atual
+			for (var op = 0; op < rows.length; op++) {
+				var ro = rows[op];
+				if (ro.status !== 'ok' || !ro.cluster) continue;
+				if (!ownerPos.has(ro.cluster.id)) ownerPos.set(ro.cluster.id, ro.loc_nu);
+			}
+			for (var v6 = 0; v6 < rows.length; v6++) {
+				var rP = rows[v6];
+				if (rP.status !== 'ambiguo' || rP.motivo !== 'conflito_municipio') continue;
+				var gotP = cascadeCandidates(rP, idx, clusters);
+				if (!gotP.cand.length) continue;
+				var ancP = anchorsForRow(rP, idxPos, vizinhoCep5Min);
+				if (!ancP) continue;
+				var pickP = pickVizinhoUnico(
+					gotP.cand, clusters, ancP.anchors, vizinhoCep5TolKm, maxExtentKm,
+					rP.loc_nu, ownerPos
+				);
+				if (!pickP) continue;
+				var alvoP = clusters[pickP.clusterIdx];
+				var agP = alvoP.agg;
+				rP.cluster = alvoP;
+				rP.motivo = '';
+				rP.regra = 'vizinho_cep5';
+				rP.status = 'ok';
+				rP.nCand = gotP.cand.length;
+				rP.via_vizinho_cep5 = true;
+				rP.via_vizinho_pos_conflito = true;
+				rP.nome_regra = gotP.regra;
+				rP.vizinho_fonte = ancP.fonte;
+				rP.vizinho_n = ancP.anchors.length;
+				rP.vizinho_dist = pickP.dist;
+				ownerPos.set(alvoP.id, rP.loc_nu);
+				vizinhoPos++;
+				stats.vizinho_cep5_recuperados = (stats.vizinho_cep5_recuperados || 0) + 1;
+				if (exemplosPos.length < 30) {
+					exemplosPos.push({
+						log_nu: rP.log_nu,
+						dne_nome: (rP.tlo + ' ' + rP.log_no).trim(),
+						cep: rP.cep,
+						cep5: ancP.cep5,
+						localidade: (localidades.get(rP.loc_nu) || {}).nome || '',
+						geo_regra: 'vizinho_cep5',
+						nome_regra: gotP.regra,
+						fonte: ancP.fonte,
+						fase: 'pos_conflito',
+						n_vizinhos: ancP.anchors.length,
+						dist_vizinho_km: Math.round(pickP.dist * 1000) / 1000,
+						n_cand_nome: gotP.cand.length,
+						vizinhos: topVizinhos(agP.lat, agP.lng, ancP.anchors, 3)
+					});
+				}
+				var bbP = porBairro.get(rP.bai_ini);
+				if (!bbP) porBairro.set(rP.bai_ini, bbP = { sLat: 0, sLng: 0, n: 0 });
+				bbP.sLat += agP.lat;
+				bbP.sLng += agP.lng;
+				bbP.n++;
+			}
+			if (vizinhoPos) {
+				log('      vizinho_cep5 pós-conflito: recuperou ' + vizinhoPos +
+					' (tol=' + vizinhoCep5TolKm + ' km, min=' + vizinhoCep5Min + ')');
+			}
+		}
+		stats.vizinho_cep5_pos_conflito_recuperados = vizinhoPos;
+		stats.vizinho_cep5_pos_conflito_exemplos = exemplosPos;
+		// Auditoria unificada: 5e + amostra da 5f (sem estourar o teto da 5e)
+		if (exemplosPos.length) {
+			stats.vizinho_cep5_exemplos = (stats.vizinho_cep5_exemplos || []).concat(exemplosPos);
+		}
 	}
 
 	// ---- Fase 6: emitir
@@ -965,9 +1085,11 @@ async function run(opts) {
 		titulo_exemplos: exemplosTitulo,
 		sem_nome_osm_exemplos: exemplosSemNome,
 		vizinho_cep5_exemplos: stats.vizinho_cep5_exemplos || [],
+		vizinho_cep5_pos_conflito_exemplos: stats.vizinho_cep5_pos_conflito_exemplos || [],
 		rodadas: stats.rodadas,
 		envelope_recuperados: stats.envelope_recuperados || 0,
 		vizinho_cep5_recuperados: stats.vizinho_cep5_recuperados || 0,
+		vizinho_cep5_pos_conflito_recuperados: stats.vizinho_cep5_pos_conflito_recuperados || 0,
 		clusters_multi_municipio: stats.clusters_multi_municipio || 0,
 		linhas_em_cluster_multi: stats.linhas_em_cluster_multi || 0,
 		revogados_conflito_municipio: stats.revogados_conflito_municipio || 0,

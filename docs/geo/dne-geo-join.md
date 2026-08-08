@@ -381,6 +381,21 @@ Desligar: `--sem-vizinho-cep5`.
 Diferença da âncora local antiga: índice fixo (sem encadear recovery fraca), vizinho-mais-próximo,
 mínimo de âncoras, e só no resíduo pós-envelope.
 
+### Fase 5f — vizinhança CEP-5 após `conflito_municipio`
+
+Depois da exclusão multi-município (5d), o perdedor às vezes tem **outro** cluster de nome
+(a via da própria cidade) que o desempate por tamanho não escolheu. Ex.: `Rua Neuchatel`
+em SP (`log_nu` 606476) vs São Bernardo — o cluster da Capela do Socorro ficava órfão.
+
+Mesma regra da 5e, com duas diferenças:
+
+1. Só linhas `ambiguo` / `conflito_municipio`.
+2. Ignora clusters cujo dono atual é **outro** `loc_nu` (não reaponta a via do vizinho).
+
+`geo_regra=vizinho_cep5`. Relatório: `vizinho_cep5_pos_conflito_recuperados` e
+`vizinho_cep5_pos_conflito_exemplos` (`fase=pos_conflito`). Também entra em
+`vizinho_cep5_recuperados` / `vizinho_cep5_exemplos`. Desliga com `--sem-vizinho-cep5`.
+
 ### O que as amostras revelaram
 
 Ler 20 linhas de cada motivo ([amostras-ambiguo-sp.md](./amostras-ambiguo-sp.md)) mostrou coisas que
