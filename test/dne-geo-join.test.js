@@ -575,6 +575,7 @@ test('dne-geo-join: parseCli lê as opções', function () {
 		'--cluster-cell=0.05', '--max-extent-km=20', '--footprint-dilate=2',
 		'--envelope-tol-km=0.5', '--sem-envelope', '--sem-exclusao-cluster',
 		'--vizinho-cep5-tol-km=0.8', '--vizinho-cep5-min=2', '--sem-vizinho-cep5',
+		'--sem-fuzzy',
 		'--quiet'
 	]);
 	assert.equal(o.dneDir, 'D:\\dne');
@@ -590,7 +591,90 @@ test('dne-geo-join: parseCli lê as opções', function () {
 	assert.equal(o.vizinhoCep5TolKm, 0.8);
 	assert.equal(o.vizinhoCep5Min, 2);
 	assert.equal(o.semVizinhoCep5, true);
+	assert.equal(o.semFuzzy, true);
 	assert.equal(o.quiet, true);
+});
+
+/**
+ * conectores: DNE sem "da" ↔ OSM com "da".
+ * fuzzy: DNE San ↔ OSM Sao (dist=1), com âncoras no mesmo município.
+ */
+function setupConectoresFuzzyDirs() {
+	var base = fs.mkdtempSync(path.join(os.tmpdir(), 'dne-geo-cf-'));
+	var dne = path.join(base, 'dne');
+	var osm = path.join(base, 'osm');
+	var out = path.join(base, 'out');
+	fs.mkdirSync(dne);
+	fs.mkdirSync(osm);
+
+	var loc = ['1@ZZ@Cidade A@@1@M@@Cid A@1234567'].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOCALIDADE.TXT'), Buffer.from(loc, 'latin1'));
+	var bai = ['10@ZZ@1@Centro@Ctr'].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_BAIRRO.TXT'), Buffer.from(bai, 'latin1'));
+
+	var log = [
+		'500@ZZ@1@10@@Alfa Unica@@11111000@Rua@S@R Alfa Unica',
+		'501@ZZ@1@10@@Beta Unica@@11111001@Rua@S@R Beta Unica',
+		// DNE omite "da"; OSM tem "da"
+		'502@ZZ@1@10@@Arlindo Moraes Costa@@11111002@Estrada@S@Est Arlindo M Costa',
+		// typo San/Sao — len≥10 no bare
+		'503@ZZ@1@10@@San Felipe Neri@@11111003@Rua@S@R San Felipe Neri',
+		// sem match fuzzy: nome curto
+		'504@ZZ@1@10@@Ab@@11111004@Rua@S@R Ab'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOGRADOURO_ZZ.TXT'), Buffer.from(log, 'latin1'));
+
+	var ways = [
+		osmRow(1, 'Rua Alfa Unica', 'rua alfa unica', 'residential', A_LAT, A_LNG),
+		osmRow(2, 'Rua Beta Unica', 'rua beta unica', 'residential', A_LAT - 0.001, A_LNG),
+		osmRow(3, 'Estrada Arlindo Moraes da Costa', 'estrada arlindo moraes da costa',
+			'residential', A_LAT - 0.002, A_LNG - 0.001),
+		osmRow(4, 'Rua Sao Felipe Neri', 'rua sao felipe neri',
+			'residential', A_LAT - 0.003, A_LNG + 0.001),
+		// homônimo fuzzy longe — footprint tem que rejeitar
+		osmRow(5, 'Rua Sao Felipe Neri', 'rua sao felipe neri',
+			'residential', LONGE_LAT, LONGE_LNG, 40)
+	].join('\n');
+	fs.writeFileSync(path.join(osm, 'OSM_LOGRADOURO_ZZ.TXT'), ways, 'utf8');
+
+	return { base: base, dne: dne, osm: osm, out: out };
+}
+
+test('dne-geo-join: conectores e fuzzy dist=1 com footprint', async function (t) {
+	var d = setupConectoresFuzzyDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true
+	});
+	var row = readOut(d.out, 'ZZ');
+
+	assert.equal(row['502'][20], 'ok');
+	assert.equal(row['502'][21], 'conectores', 'Arlindo Moraes Costa ↔ … da Costa');
+	assert.ok(Math.abs(Number(row['502'][14]) - A_LAT) < 0.01);
+
+	assert.equal(row['503'][20], 'ok');
+	assert.equal(row['503'][21], 'fuzzy', 'San Felipe Neri ↔ Sao Felipe Neri');
+	assert.ok(Math.abs(Number(row['503'][14]) - A_LAT) < 0.01,
+		'fuzzy deve pegar o cluster do município, não o de 150 km');
+
+	assert.ok((rel.geo_regra.conectores || 0) >= 1);
+	assert.ok((rel.geo_regra.fuzzy || 0) >= 1);
+});
+
+test('dne-geo-join: --sem-fuzzy não usa Levenshtein', async function (t) {
+	var d = setupConectoresFuzzyDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		semFuzzy: true
+	});
+	var row = readOut(d.out, 'ZZ');
+	assert.equal(row['502'][20], 'ok', 'conectores continua');
+	assert.equal(row['502'][21], 'conectores');
+	assert.equal(row['503'][20], 'sem_nome_osm', 'San/Sao some sem fuzzy');
+	assert.equal(rel.geo_regra.fuzzy || 0, 0);
 });
 
 test('dne-geo-join: coluna 26 traz as ways do cluster vencedor', async function (t) {

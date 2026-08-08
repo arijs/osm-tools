@@ -3,7 +3,8 @@
 var test = require('node:test');
 var assert = require('node:assert/strict');
 var {
-	coreName, stripTitulos, coreBare, phoneticKey, isAreaTlo, isAreaKind
+	coreName, stripTitulos, coreBare, stripMidLiga, midBare,
+	levenshtein, deletes1, fuzzyMaxDist, phoneticKey, isAreaTlo, isAreaKind
 } = require('../name-keys');
 
 test('coreName tira tipo de logradouro e conector da frente', function () {
@@ -120,4 +121,31 @@ test('guarda kind-aware: tipos de área dos dois lados', function () {
 	assert.equal(isAreaKind('park'), true);
 	assert.equal(isAreaKind('residential'), false);
 	assert.equal(isAreaKind('pedestrian'), false);
+});
+
+test('stripMidLiga / midBare removem de/da/do no meio', function () {
+	assert.equal(stripMidLiga('arlindo moraes da costa'), 'arlindo moraes costa');
+	assert.equal(stripMidLiga('arlindo moraes costa'), 'arlindo moraes costa');
+	assert.equal(stripMidLiga('francisco da cunha monteiro'), 'francisco cunha monteiro');
+	assert.equal(
+		midBare('estrada arlindo moraes da costa'),
+		midBare('estrada arlindo moraes costa')
+	);
+	// não come o primeiro token nem esvazia
+	assert.equal(stripMidLiga('da'), 'da');
+	assert.equal(stripMidLiga(''), '');
+	// artigo "a"/"o" no meio não é MID_LIGA
+	assert.equal(stripMidLiga('volta a gente'), 'volta a gente');
+});
+
+test('levenshtein e fuzzyMaxDist (dist=1 só len≥10)', function () {
+	assert.equal(levenshtein('san felipe neri', 'sao felipe neri'), 1);
+	assert.equal(levenshtein('noguerol', 'nogueirol'), 1);
+	assert.equal(levenshtein('abc', 'abc'), 0);
+	assert.equal(levenshtein('abc', 'xyz', 1), 2); // early-exit → maxDist+1
+	assert.equal(fuzzyMaxDist(9), 0);
+	assert.equal(fuzzyMaxDist(10), 1);
+	assert.equal(fuzzyMaxDist(25), 1);
+	assert.ok(deletes1('abc').indexOf('ac') >= 0);
+	assert.ok(deletes1('abc').indexOf('abc') >= 0);
 });

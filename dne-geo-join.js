@@ -21,6 +21,7 @@
  *     --vizinho-cep5-tol-km=1  recupera fora_do_footprint e pós-conflito por CEP-5 (km)
  *     --vizinho-cep5-min=3    mínimo de vias ok no mesmo CEP-5 (ou bairro)
  *     --sem-vizinho-cep5    desliga a recuperação por vizinhança CEP-5 (5e e 5f)
+ *     --sem-fuzzy           desliga o degrau fuzzy (Levenshtein dist=1, len≥10)
  *     --sem-exclusao-cluster desliga a exclusividade de cluster entre municípios
  *     --quiet
  */
@@ -35,7 +36,7 @@ var txtAt = require('./txt-at-writer');
 
 var REGRAS = [
 	'exato', 'area', 'name_alt', 'addr', 'nucleo', 'fonetico',
-	'titulo', 'titulo_fonetico', 'vizinho_cep5'
+	'titulo', 'titulo_fonetico', 'conectores', 'fuzzy', 'vizinho_cep5'
 ];
 
 // A "âncora local" antiga (centroide + raio = max dist) foi medida e removida:
@@ -356,13 +357,15 @@ function buildClusters(byName, clusterCell) {
 
 /**
  * Índices derivados sobre os nomes de cluster:
- * núcleo sem tipo, fonético, núcleo sem título, fonético sem título.
+ * núcleo sem tipo, fonético, núcleo sem título, fonético sem título,
+ * núcleo sem conectores no meio, e índice SymSpell K=1 para fuzzy.
  */
 function buildDerivedIndexes(byNameIdx) {
 	var byCore = new Map();
 	var byPhon = new Map();
 	var byTitle = new Map();
 	var byTitlePhon = new Map();
+	var byMid = new Map();
 	function push(map, key, idxs) {
 		if (!key) return;
 		var a = map.get(key);
@@ -377,11 +380,54 @@ function buildDerivedIndexes(byNameIdx) {
 		var bare = keys.stripTitulos(c).bare;
 		push(byTitle, bare, idxs);
 		push(byTitlePhon, keys.phoneticKey(bare), idxs);
+		push(byMid, keys.stripMidLiga(bare), idxs);
 	});
 	return {
 		byCore: byCore, byPhon: byPhon,
-		byTitle: byTitle, byTitlePhon: byTitlePhon
+		byTitle: byTitle, byTitlePhon: byTitlePhon,
+		byMid: byMid,
+		fuzzyDel: buildFuzzyDelIndex(byMid)
 	};
+}
+
+/** deleteKey → [midBare, …] para lookup SymSpell K=1. */
+function buildFuzzyDelIndex(byMid) {
+	var delIndex = new Map();
+	byMid.forEach(function (_idxs, mid) {
+		if (!mid || mid.length < 4) return;
+		var dels = keys.deletes1(mid);
+		for (var i = 0; i < dels.length; i++) {
+			var d = dels[i];
+			var a = delIndex.get(d);
+			if (a) a.push(mid);
+			else delIndex.set(d, [mid]);
+		}
+	});
+	return delIndex;
+}
+
+/**
+ * Mid-bares OSM a distância de Levenshtein exatamente 1 do `mid` DNE.
+ * Só considera nomes com fuzzyMaxDist(len) ≥ 1 (≥len ≥ 10).
+ */
+function fuzzyMidKeys(mid, delIndex) {
+	var md = keys.fuzzyMaxDist(mid.length);
+	if (md < 1 || !delIndex) return [];
+	var seen = Object.create(null);
+	var out = [];
+	var probes = keys.deletes1(mid);
+	for (var i = 0; i < probes.length; i++) {
+		var arr = delIndex.get(probes[i]);
+		if (!arr) continue;
+		for (var j = 0; j < arr.length; j++) {
+			var osmMid = arr[j];
+			if (osmMid === mid || seen[osmMid]) continue;
+			if (keys.levenshtein(mid, osmMid, md) !== 1) continue;
+			seen[osmMid] = 1;
+			out.push(osmMid);
+		}
+	}
+	return out;
 }
 
 // ---------------------------------------------------------------- cascata
@@ -404,6 +450,7 @@ function candidatesFor(row, idxs, clusters) {
 function cascadeCandidates(row, idx, clusters) {
 	var core = keys.coreName(row.comTipo);
 	var bare = keys.stripTitulos(core).bare;
+	var mid = keys.stripMidLiga(bare);
 	var tries = [
 		['exato', idx.byName.get(row.comTipo)],
 		['exato', idx.byName.get(row.semTipo)],
@@ -413,11 +460,28 @@ function cascadeCandidates(row, idx, clusters) {
 		['fonetico', idx.byPhon.get(keys.phoneticKey(core))],
 		// DNE sem título ↔ OSM com Doutor/Prof/… (ou o inverso)
 		['titulo', idx.byTitle.get(bare)],
-		['titulo_fonetico', idx.byTitlePhon.get(keys.phoneticKey(bare))]
+		['titulo_fonetico', idx.byTitlePhon.get(keys.phoneticKey(bare))],
+		// DNE/OSM divergem em de/da/do no meio ("Moraes Costa" ↔ "Moraes da Costa")
+		['conectores', idx.byMid.get(mid)]
 	];
 	for (var i = 0; i < tries.length; i++) {
 		var cand = candidatesFor(row, tries[i][1], clusters);
 		if (cand.length) return { regra: tries[i][0], cand: cand };
+	}
+	// Fuzzy dist=1 (len≥10): último recurso de nome; footprint/desempate filtram depois.
+	if (!idx.semFuzzy && idx.fuzzyDel) {
+		var fKeys = fuzzyMidKeys(mid, idx.fuzzyDel);
+		if (fKeys.length) {
+			var fIdxs = [];
+			for (var f = 0; f < fKeys.length; f++) {
+				var fi = idx.byMid.get(fKeys[f]);
+				if (fi) {
+					for (var k = 0; k < fi.length; k++) fIdxs.push(fi[k]);
+				}
+			}
+			var fCand = candidatesFor(row, fIdxs, clusters);
+			if (fCand.length) return { regra: 'fuzzy', cand: fCand };
+		}
 	}
 	return { regra: '', cand: [] };
 }
@@ -440,6 +504,7 @@ async function run(opts) {
 	var useVizinhoCep5 = opts.semVizinhoCep5 ? false : true;
 	var vizinhoCep5TolKm = opts.vizinhoCep5TolKm == null ? 1 : opts.vizinhoCep5TolKm;
 	var vizinhoCep5Min = opts.vizinhoCep5Min == null ? 3 : opts.vizinhoCep5Min;
+	var useFuzzy = opts.semFuzzy ? false : true;
 
 	log('DNE  : ' + opts.dneDir);
 	log('OSM  : ' + opts.osmDir);
@@ -484,11 +549,15 @@ async function run(opts) {
 	var idx = {
 		byName: built.byName, altIdx: altIdx,
 		byCore: derived.byCore, byPhon: derived.byPhon,
-		byTitle: derived.byTitle, byTitlePhon: derived.byTitlePhon
+		byTitle: derived.byTitle, byTitlePhon: derived.byTitlePhon,
+		byMid: derived.byMid,
+		fuzzyDel: useFuzzy ? derived.fuzzyDel : null,
+		semFuzzy: !useFuzzy
 	};
 	log('      clusters=' + clusters.length + ' nomes=' + built.byName.size +
 		' nucleos=' + derived.byCore.size + ' foneticos=' + derived.byPhon.size +
-		' titulos=' + derived.byTitle.size);
+		' titulos=' + derived.byTitle.size + ' mids=' + derived.byMid.size +
+		(useFuzzy ? '' : ' fuzzy=off'));
 
 	// ---- Fase 2: âncoras (nome com 1 loc_nu no DNE e 1 cluster no OSM)
 	log('[4/6] âncoras e footprint…');
@@ -1126,6 +1195,7 @@ function parseCli(argv) {
 		else if (a.indexOf('--vizinho-cep5-tol-km=') === 0) o.vizinhoCep5TolKm = Number(a.slice(22));
 		else if (a.indexOf('--vizinho-cep5-min=') === 0) o.vizinhoCep5Min = Number(a.slice(19));
 		else if (a === '--sem-vizinho-cep5') o.semVizinhoCep5 = true;
+		else if (a === '--sem-fuzzy') o.semFuzzy = true;
 		else if (a === '--sem-exclusao-cluster') o.semExclusaoCluster = true;
 		else if (a === '--quiet') o.quiet = true;
 	}
@@ -1137,6 +1207,8 @@ module.exports = {
 	parseCli: parseCli,
 	buildClusters: buildClusters,
 	buildDerivedIndexes: buildDerivedIndexes,
+	buildFuzzyDelIndex: buildFuzzyDelIndex,
+	fuzzyMidKeys: fuzzyMidKeys,
 	candidatesFor: candidatesFor,
 	resolveOsmLogradouro: resolveOsmLogradouro,
 	loadOsmStreets: loadOsmStreets,

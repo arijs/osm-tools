@@ -34,6 +34,13 @@ var TIPO_MOD = {
 var LIGA = { de: 1, da: 1, do: 1, das: 1, dos: 1, e: 1, a: 1, o: 1, em: 1, no: 1, na: 1 };
 
 /**
+ * Conectores no *meio* do núcleo — DNE e OSM divergem em inserir/omitir.
+ * Ex.: "arlindo moraes costa" ↔ "arlindo moraes da costa".
+ * Subconjunto de LIGA (sem artigos a/o e sem em/no/na — iniciais e ruído).
+ */
+var MID_LIGA = { de: 1, da: 1, do: 1, das: 1, dos: 1, e: 1 };
+
+/**
  * Títulos / honrarias no início do núcleo (depois do tipo).
  * DNE costuma omitir; OSM grava por extenso ou abreviado.
  * Entrada já normalizada (sem acento). Não inclui santo/são — colidem com topônimos.
@@ -120,6 +127,75 @@ function coreBare(norm) {
 }
 
 /**
+ * Remove conectores MID_LIGA em qualquer posição exceto a primeira palavra.
+ * "arlindo moraes da costa" → "arlindo moraes costa".
+ * Não devolve vazio.
+ */
+function stripMidLiga(norm) {
+	if (!norm) return '';
+	var t = norm.split(' ').filter(Boolean);
+	if (t.length <= 1) return norm;
+	var out = [t[0]];
+	for (var i = 1; i < t.length; i++) {
+		if (MID_LIGA[t[i]] === 1) continue;
+		out.push(t[i]);
+	}
+	return out.length ? out.join(' ') : norm;
+}
+
+/** Núcleo sem tipo, sem título e sem conectores no meio. */
+function midBare(norm) {
+	return stripMidLiga(coreBare(norm));
+}
+
+/**
+ * Distância de Levenshtein com early-exit se > maxDist.
+ * maxDist omitido → distância completa.
+ */
+function levenshtein(a, b, maxDist) {
+	if (a === b) return 0;
+	var la = a.length;
+	var lb = b.length;
+	if (maxDist !== undefined && Math.abs(la - lb) > maxDist) return maxDist + 1;
+	if (!la) return lb;
+	if (!lb) return la;
+	var prev = new Array(lb + 1);
+	var cur = new Array(lb + 1);
+	var j, i;
+	for (j = 0; j <= lb; j++) prev[j] = j;
+	for (i = 1; i <= la; i++) {
+		cur[0] = i;
+		var rowMin = i;
+		for (j = 1; j <= lb; j++) {
+			var cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+			cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+			if (cur[j] < rowMin) rowMin = cur[j];
+		}
+		if (maxDist !== undefined && rowMin > maxDist) return maxDist + 1;
+		var tmp = prev;
+		prev = cur;
+		cur = tmp;
+	}
+	return prev[lb];
+}
+
+/** A própria string + deleções de 1 caractere (índice SymSpell K=1). */
+function deletes1(s) {
+	var out = [s];
+	for (var i = 0; i < s.length; i++) out.push(s.slice(0, i) + s.slice(i + 1));
+	return out;
+}
+
+/**
+ * Distância máxima de fuzzy por comprimento do núcleo.
+ * Só dist=1 e só a partir de 10 chars — medido: dist=2 ainda gera
+ * Germani↔Germano / Luiz↔Luiza. Ver changelog 2026-08-07.
+ */
+function fuzzyMaxDist(len) {
+	return len >= 10 ? 1 : 0;
+}
+
+/**
  * Chave fonética PT-BR. Colapsa as variações de grafia que o DNE e o OSM
  * divergem sistematicamente: Luiz/Luis, Sousa/Souza, Ayrton/Airton, Affonso/Afonso.
  *
@@ -167,11 +243,17 @@ module.exports = {
 	coreName: coreName,
 	stripTitulos: stripTitulos,
 	coreBare: coreBare,
+	stripMidLiga: stripMidLiga,
+	midBare: midBare,
+	levenshtein: levenshtein,
+	deletes1: deletes1,
+	fuzzyMaxDist: fuzzyMaxDist,
 	phoneticKey: phoneticKey,
 	isAreaTlo: isAreaTlo,
 	isAreaKind: isAreaKind,
 	TIPOS: TIPOS,
 	TIPO_MOD: TIPO_MOD,
+	MID_LIGA: MID_LIGA,
 	TITULOS: TITULOS,
 	TLO_AREA: TLO_AREA,
 	KIND_AREA: KIND_AREA

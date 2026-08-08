@@ -106,15 +106,22 @@ determinístico — está em [melhoria-extracao-coordenadas.md](./melhoria-extra
 | `name_alt` | bate em `name_alt_norm` | 4 321 | 1,3 % | 1,7 % |
 | `area` | como exato, candidato `kind` ∈ {`square`,`park`}, só para `TLO_TX` de área | 2 459 | 0,7 % | 1,0 % |
 | `titulo` | núcleo sem títulos/honrarias (`Doutor`, `Dr`, `Prof`, …) | 1 656 | 0,48 % | 0,65 % |
-| `vizinho_cep5` | nome casou, fora da pegada; 1 candidato a ≤1 km de ≥3 vias ok no mesmo CEP-5 (ou bairro) — fase 5e | 317 | 0,09 % | 0,12 % |
+| `vizinho_cep5` | nome casou, fora da pegada; 1 candidato a ≤1 km de ≥3 vias ok no mesmo CEP-5 (ou bairro) — fase 5e/5f | 317 | 0,09 % | 0,12 % |
 | `titulo_fonetico` | `titulo` + chave fonética | 155 | 0,05 % | 0,06 % |
 | `addr` | bate em `addr:street` de `OSM_ADDR_POINT` | 127 | 0,04 % | 0,05 % |
+| `conectores` | núcleo sem `de`/`da`/`do`/`das`/`dos`/`e` no meio (`Moraes Costa` ↔ `Moraes da Costa`) | (re-join) | | |
+| `fuzzy` | Levenshtein dist=1 no mid-bare, só len≥10 (`San`↔`Sao`, typos) | (re-join) | | |
 | | **Total `ok`** | **256 249** | **75,0 %** | **100 %** |
 
 Ordem da cascata (nome, ainda dentro do footprint):  
-`exato` → `area` → `name_alt` → `addr` → `nucleo` → `fonetico` → `titulo` → `titulo_fonetico`  
+`exato` → `area` → `name_alt` → `addr` → `nucleo` → `fonetico` → `titulo` → `titulo_fonetico` → `conectores` → `fuzzy`  
 …e depois das voltas de footprint: **envelope** (mantém a `geo_regra` de nome) e **`vizinho_cep5`**
 (grava `geo_regra=vizinho_cep5`).
+
+`conectores` e `fuzzy` entram depois dos degraus determinísticos. `fuzzy` usa índice SymSpell K=1
+e **só dist=1** com núcleo ≥10 chars (dist=2 ainda gera Germani↔Germano). Desligar: `--sem-fuzzy`.
+Footprint / desempate / exclusão multi-município continuam obrigatórios — fuzzy sem pegada
+casaria homônimo de outra cidade.
 
 Leitura dos degraus novos (mesmo re-join):
 
