@@ -2,7 +2,14 @@
 
 /**
  * Brazilian UF helpers for OSM extract (nacional, extensível).
+ *
+ * A UF de um ponto sai do POLÍGONO da UF (`uf-poly.js`, malha do IBGE). Os
+ * retângulos de `UF_BBOX` continuam aqui como atalho barato e como último
+ * recurso para ponto fora de todos os polígonos — não decidem mais nada dentro
+ * do Brasil.
  */
+
+var ufPoly = require('./uf-poly');
 
 /** First two digits of IBGE município → UF */
 var IBGE_UF = {
@@ -200,6 +207,21 @@ function ufFromPoint(lat, lon, bboxes) {
 }
 
 /**
+ * UF do ponto por geometria: POLÍGONO primeiro (malha do IBGE) e, só quando o
+ * ponto cai fora de todos eles — mar aberto, plataforma, fora do Brasil —, o
+ * retângulo antigo.
+ *
+ * A ordem importa nos dois sentidos: o polígono é quem separa MG de GO, e o
+ * retângulo de resto garante que nenhum ponto que hoje recebe rótulo passe a
+ * ser XX por causa da simplificação do contorno ou de um trecho no mar.
+ */
+function ufFromPointGeo(lat, lon, bboxes) {
+	var u = ufPoly.ufFromPointPoly(lat, lon);
+	if (u) return u;
+	return ufFromPoint(lat, lon, bboxes);
+}
+
+/**
  * Ponto representativo das opções: o par lat/lng, ou o centro do bbox.
  */
 function pointOfOptions(options) {
@@ -213,7 +235,7 @@ function pointOfOptions(options) {
 }
 
 /**
- * UF from feature: tags → IBGE → point/bbox centroid.
+ * UF from feature: tags → IBGE → geometria (polígono, e retângulo de resto).
  */
 function resolveUf(options) {
 	options = options || {};
@@ -224,7 +246,7 @@ function resolveUf(options) {
 		if (u) return u;
 	}
 	var p = pointOfOptions(options);
-	u = ufFromPoint(p.lat, p.lon, options.bboxes);
+	u = ufFromPointGeo(p.lat, p.lon, options.bboxes);
 	return u || 'XX';
 }
 
@@ -246,21 +268,20 @@ function resolveUf(options) {
  * Patrocínio, cidade inteira de um cliente, com 3,5% de cobertura real
  * (18/08/2026).
  *
- * ─── a regra ─────────────────────────────────────────────────────────────
+ * ─── a regra, desde o polígono (18/08/2026) ──────────────────────────────
  *
  * Tag e IBGE continuam mandando: são dado explícito da feature, e quem decide
- * se ela entra ou não no run é o filtro, não o rótulo. Quando a UF sai só da
- * GEOMETRIA e o run é filtrado, quem nomeia é a caixa PERMITIDA que contém o
- * ponto — exatamente o critério que `passesUfFilter` já usa para manter a
- * feature. Assim as duas decisões passam a sair da mesma conta.
+ * se ela entra ou não no run é o filtro, não o rótulo.
  *
- * Efeito colateral aceito: num run `--uf=MG`, uma via realmente goiana que caia
- * dentro do retângulo de MG passa a ser rotulada MG. Ela já era mantida no run
- * (o filtro a aceitava) e já poluía a pasta de saída; o que muda é só o arquivo
- * em que ela cai. Retângulo não separa MG de GO — o certo é polígono de UF, e
- * está anotado em docs/geo/extrair-geom-brasil.md.
+ * Faltando os dois, quem nomeia é o POLÍGONO da UF — e ele nomeia igual com ou
+ * sem filtro. A muleta acima (deixar a caixa permitida nomear) ficou só para o
+ * ponto que cai fora de TODOS os polígonos: mar aberto, plataforma, um trecho
+ * fora do Brasil. Ali continua valendo o retângulo permitido, porque ali o
+ * retângulo é tudo o que existe.
  *
- * Sem filtro (`ufAllow` nulo) o comportamento é o de sempre.
+ * O par rótulo/filtro voltou a sair da mesma conta, agora sem mentir: num run
+ * `--uf=MG`, uma via realmente goiana é rotulada GO **e descartada** pelo
+ * `passesUfFilter` — antes ela era mantida e escrita como se fosse de MG.
  */
 function resolveUfFiltered(options, ufAllow) {
 	if (!ufAllow) return resolveUf(options);
@@ -269,6 +290,8 @@ function resolveUfFiltered(options, ufAllow) {
 	if (!byTag && options.ibge) byTag = ufFromIbge(options.ibge);
 	if (byTag) return byTag;
 	var p = pointOfOptions(options);
+	var byPoly = ufPoly.ufFromPointPoly(p.lat, p.lon);
+	if (byPoly) return byPoly;
 	var allowed = ufFromPoint(p.lat, p.lon, bboxesForFilter(ufAllow));
 	if (allowed) return allowed;
 	return ufFromPoint(p.lat, p.lon, options.bboxes) || 'XX';
@@ -352,12 +375,22 @@ function bboxesForFilter(ufAllow) {
 
 /**
  * Whether a resolved UF / point should be kept under an optional filter.
- * XX só passa se o ponto cair em algum bbox permitido.
+ *
+ * Mesma fonte de verdade da nomeação: quem decide é o POLÍGONO. Feature que o
+ * polígono põe fora de todas as UFs permitidas é DESCARTADA do run — antes o
+ * retângulo a mantinha, e ela era gravada com o nome de uma UF que não era a
+ * dela, que é o defeito que originou tudo isto.
+ *
+ * Só quando o ponto está fora de todos os polígonos (mar, plataforma, fora do
+ * Brasil) o retângulo volta a decidir — sem ele, um trecho no mar perderia o
+ * rótulo que hoje tem.
  */
 function passesUfFilter(ufAllow, uf, lat, lon) {
 	if (!ufAllow) return true;
 	if (uf && uf !== 'XX' && ufAllow[uf]) return true;
 	if (lat != null && lon != null && isFinite(lat) && isFinite(lon)) {
+		var byPoly = ufPoly.ufFromPointPoly(lat, lon);
+		if (byPoly) return ufAllow[byPoly] === true;
 		var boxes = bboxesForFilter(ufAllow);
 		for (var k in boxes) {
 			if (pointInBbox(lat, lon, boxes[k])) return true;
@@ -391,6 +424,8 @@ module.exports = {
 	normalizeUfToken: normalizeUfToken,
 	ufFromTags: ufFromTags,
 	ufFromPoint: ufFromPoint,
+	ufFromPointPoly: ufPoly.ufFromPointPoly,
+	ufFromPointGeo: ufFromPointGeo,
 	resolveUf: resolveUf,
 	resolveUfFiltered: resolveUfFiltered,
 	extractIbge: extractIbge,
