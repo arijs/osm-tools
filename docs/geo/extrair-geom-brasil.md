@@ -70,6 +70,34 @@ O que vale para quem opera, agora:
 
 ---
 
+## Consertar um extract antigo sem re-extrair
+
+O rótulo de UF é campo derivado da coordenada, e a coordenada está em cada linha gravada.
+`scripts/relabel-uf.js` relê os artefatos, decide a UF pelo polígono, deduplica a feature que
+duas fatias viram e regrava numa pasta nova (mesmo `txt-at-writer`, mesmo `MANIFEST.json`).
+Nada é apagado.
+
+```powershell
+node scripts/relabel-uf.js --base=G:\osm-geo-br-geom --dry-run          # só as contas
+node scripts/relabel-uf.js --base=G:\osm-geo-br-geom --out=G:\osm-geo-br-uf
+node scripts/relabel-uf.js --base=... --out=... --only=mg,sp
+```
+
+Brasil inteiro em **111 s** (18/08/2026): 4 005 138 linhas de logradouro lidas, 1 204 944
+duplicadas, **831 066 mudaram de UF**, 2 800 194 gravadas — e o mesmo para o GEOM, que segue a
+UF do irmão em `OSM_LOGRADOURO_{UF}` em vez de decidir pelo primeiro ponto do traçado.
+
+Duas ressalvas:
+
+- Aqui **o polígono decide sozinho** — a linha gravada não guarda as tags, então a precedência
+  tag/IBGE do extract não é reproduzível. O rótulo antigo só sobrevive fora de todos os
+  polígonos (mar).
+- **Não recupera o que o filtro velho nunca deixou entrar.** `passesUfFilter` era retângulo, e
+  quatro UFs têm área fora do próprio retângulo: Fernando de Noronha (PE), Trindade e Martim
+  Vaz (ES) e faixas de ~8 km (AP) e ~4 km (PI). Só um re-extract com o código novo traz isso.
+
+---
+
 ## Uso
 
 ```powershell
