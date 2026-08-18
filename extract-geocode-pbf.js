@@ -323,12 +323,12 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 
 	if (wantDataset(ctx.datasets, 'estado')) {
 		if (PLACE_STATE[place] || (boundary === 'administrative' && admin === '4')) {
-			var uf = ufBr.resolveUf({
+			var uf = ufBr.resolveUfFiltered({
 				tags: tags,
 				lat: lat,
 				lng: lon,
 				ibge: ibgeInfo.ibge
-			});
+			}, ctx.ufAllow);
 			if (uf === 'XX') uf = ufBr.normalizeUfToken(tags.ref) || uf;
 			if (keepByUfFilter(ctx, uf, lat, lon)) {
 				ctx.writer.write('OSM_ESTADO', [
@@ -359,12 +359,12 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 			PLACE_MUNI[place] ||
 			(boundary === 'administrative' && admin === '8')
 		) {
-			var ufM = ufBr.resolveUf({
+			var ufM = ufBr.resolveUfFiltered({
 				tags: tags,
 				lat: lat,
 				lng: lon,
 				ibge: ibgeMun || ibgeInfo.ibge
-			});
+			}, ctx.ufAllow);
 			if (keepByUfFilter(ctx, ufM, lat, lon)) {
 				ctx.writer.write('OSM_MUNICIPIO', [
 					'node',
@@ -390,7 +390,7 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 
 	if (wantDataset(ctx.datasets, 'bairro') && PLACE_BAIRRO[place]) {
 		var city = tags['addr:city'] || tags['is_in:city'] || tags['is_in'] || '';
-		var ufB = ufBr.resolveUf({ tags: tags, lat: lat, lng: lon });
+		var ufB = ufBr.resolveUfFiltered({ tags: tags, lat: lat, lng: lon }, ctx.ufAllow);
 		if (keepByUfFilter(ctx, ufB, lat, lon)) {
 			ctx.writer.write('OSM_BAIRRO', [
 				'node',
@@ -421,7 +421,7 @@ function processFeatureNode(ctx, id, lat, lon, tags) {
 
 	if (wantDataset(ctx.datasets, 'addr') && tags['addr:street']) {
 		var street = tags['addr:street'];
-		var ufA = ufBr.resolveUf({ tags: tags, lat: lat, lng: lon });
+		var ufA = ufBr.resolveUfFiltered({ tags: tags, lat: lat, lng: lon }, ctx.ufAllow);
 		if (keepByUfFilter(ctx, ufA, lat, lon)) {
 			var base = 'OSM_ADDR_POINT_' + (ufA === 'XX' ? 'XX' : ufA);
 			ctx.writer.write(base, [
@@ -483,12 +483,12 @@ function processFeatureWay(ctx, way) {
 
 	if (wantDataset(ctx.datasets, 'estado')) {
 		if (PLACE_STATE[place] || (boundary === 'administrative' && admin === '4')) {
-			var ufE = ufBr.resolveUf({
+			var ufE = ufBr.resolveUfFiltered({
 				tags: tags,
 				lat: g.lat === '' ? null : g.lat,
 				lng: g.lng === '' ? null : g.lng,
 				ibge: ibgeInfo.ibge
-			});
+			}, ctx.ufAllow);
 			var llE = latLonFromGeom(g);
 			if (keepByUfFilter(ctx, ufE, llE.lat, llE.lon)) {
 				ctx.writer.write('OSM_ESTADO', [
@@ -517,12 +517,12 @@ function processFeatureWay(ctx, way) {
 			PLACE_MUNI[place] ||
 			(boundary === 'administrative' && admin === '8')
 		) {
-			var ufM = ufBr.resolveUf({
+			var ufM = ufBr.resolveUfFiltered({
 				tags: tags,
 				lat: g.lat === '' ? null : g.lat,
 				lng: g.lng === '' ? null : g.lng,
 				ibge: ibgeMunW || ibgeInfo.ibge
-			});
+			}, ctx.ufAllow);
 			var llM = latLonFromGeom(g);
 			if (keepByUfFilter(ctx, ufM, llM.lat, llM.lon)) {
 				ctx.writer.write('OSM_MUNICIPIO', [
@@ -549,11 +549,11 @@ function processFeatureWay(ctx, way) {
 
 	if (wantDataset(ctx.datasets, 'bairro') && PLACE_BAIRRO[place]) {
 		var city = tags['addr:city'] || '';
-		var ufB = ufBr.resolveUf({
+		var ufB = ufBr.resolveUfFiltered({
 			tags: tags,
 			lat: g.lat === '' ? null : g.lat,
 			lng: g.lng === '' ? null : g.lng
-		});
+		}, ctx.ufAllow);
 		var llB = latLonFromGeom(g);
 		if (keepByUfFilter(ctx, ufB, llB.lat, llB.lon)) {
 			ctx.writer.write('OSM_BAIRRO', [
@@ -586,7 +586,7 @@ function municipioIbgeOnly(raw) {
 }
 
 function writeLogradouroRow(ctx, osmType, wayId, tags, name, nn, g, ibgeInfo) {
-	var uf = ufBr.resolveUf({
+	var uf = ufBr.resolveUfFiltered({
 		tags: tags,
 		lat: g.lat === '' ? null : g.lat,
 		lng: g.lng === '' ? null : g.lng,
@@ -595,7 +595,7 @@ function writeLogradouroRow(ctx, osmType, wayId, tags, name, nn, g, ibgeInfo) {
 		lng_min: g.lng_min === '' ? null : g.lng_min,
 		lng_max: g.lng_max === '' ? null : g.lng_max,
 		ibge: ibgeInfo && ibgeInfo.ibge
-	});
+	}, ctx.ufAllow);
 	var ll = latLonFromGeom(g);
 	if (!keepByUfFilter(ctx, uf, ll.lat, ll.lon)) {
 		ctx.stats.logradouroSkippedFilter =
@@ -717,12 +717,12 @@ function processFeatureRelation(ctx, rel) {
 
 	if (wantDataset(ctx.datasets, 'estado')) {
 		if (PLACE_STATE[place] || (boundary === 'administrative' && admin === '4')) {
-			var ufE = ufBr.resolveUf({
+			var ufE = ufBr.resolveUfFiltered({
 				tags: tags,
 				lat: g.lat === '' ? null : g.lat,
 				lng: g.lng === '' ? null : g.lng,
 				ibge: ibgeInfo.ibge
-			});
+			}, ctx.ufAllow);
 			var llE = latLonFromGeom(g);
 			if (keepByUfFilter(ctx, ufE, llE.lat, llE.lon)) {
 				ctx.writer.write('OSM_ESTADO', [
@@ -784,11 +784,11 @@ function processFeatureRelation(ctx, rel) {
 
 	if (wantDataset(ctx.datasets, 'bairro') && PLACE_BAIRRO[place]) {
 		var city = tags['addr:city'] || '';
-		var ufB = ufBr.resolveUf({
+		var ufB = ufBr.resolveUfFiltered({
 			tags: tags,
 			lat: g.lat === '' ? null : g.lat,
 			lng: g.lng === '' ? null : g.lng
-		});
+		}, ctx.ufAllow);
 		var llB = latLonFromGeom(g);
 		if (keepByUfFilter(ctx, ufB, llB.lat, llB.lon)) {
 			ctx.writer.write('OSM_BAIRRO', [
@@ -814,12 +814,12 @@ function processFeatureRelation(ctx, rel) {
 }
 
 function writeMunicipioRow(ctx, osmType, osmId, tags, name, nn, g, ibgeMun, sourceTag, admin, place) {
-	var ufM = ufBr.resolveUf({
+	var ufM = ufBr.resolveUfFiltered({
 		tags: tags,
 		lat: g.lat === '' ? null : g.lat,
 		lng: g.lng === '' ? null : g.lng,
 		ibge: ibgeMun
-	});
+	}, ctx.ufAllow);
 	var ll = latLonFromGeom(g);
 	if (!keepByUfFilter(ctx, ufM, ll.lat, ll.lon)) {
 		ctx.stats.municipioSkippedFilter =

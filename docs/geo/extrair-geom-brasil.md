@@ -32,6 +32,34 @@ Os extracts atuais têm `datasets.geom: false` (ou omitido): há `OSM_LOGRADOURO
 
 ---
 
+## A UF da fatia manda no nome do arquivo
+
+Cada way é rotulado por `ufBr.resolveUfFiltered`: tag/IBGE primeiro; faltando os dois, o
+**retângulo permitido pelo run** que contém o ponto. Sem essa segunda parte — como era até
+17/08/2026 — o rótulo saía do desempate global "menor retângulo vence", e as caixas se
+sobrepõem de propósito:
+
+| UF | área do retângulo | engole |
+|---|---|---|
+| GO | 52°² | Triângulo, Alto Paranaíba e Noroeste de MG |
+| BA | 91°² | norte de MG |
+| MG | 99°² | — |
+
+Resultado prático da fatia `--only=mg`: as vias de Patrocínio foram escritas em
+`OSM_LOGRADOURO_GEOM_GO`, e o consumidor que lê `..._MG` não achava traçado nenhum. No DDSOFT
+isso deixou **29 505 dos 96 426** ways referenciados pelo join de MG sem polyline (18/08/2026).
+
+Duas consequências para quem opera:
+
+- **A pasta de saída de uma fatia contém datasets de várias UFs.** Isso é esperado — o filtro
+  mantém o que cai dentro do retângulo permitido — e continua valendo depois da correção, para
+  ways que trazem tag/IBGE de UF vizinha. Ao consumir, considere os arquivos vizinhos.
+- **Retângulo não separa MG de GO.** A correção faz o rótulo concordar com o filtro do run, que
+  é o que o pipeline usa; o certo mesmo é polígono de UF (ou resolver por município/IBGE antes
+  de cair no ponto), e isso continua em aberto.
+
+---
+
 ## Uso
 
 ```powershell

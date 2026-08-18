@@ -200,6 +200,19 @@ function ufFromPoint(lat, lon, bboxes) {
 }
 
 /**
+ * Ponto representativo das opções: o par lat/lng, ou o centro do bbox.
+ */
+function pointOfOptions(options) {
+	var lat = options.lat;
+	var lon = options.lng != null ? options.lng : options.lon;
+	if (lat == null && options.lat_min != null && options.lat_max != null) {
+		lat = (Number(options.lat_min) + Number(options.lat_max)) / 2;
+		lon = (Number(options.lng_min) + Number(options.lng_max)) / 2;
+	}
+	return { lat: lat, lon: lon };
+}
+
+/**
  * UF from feature: tags → IBGE → point/bbox centroid.
  */
 function resolveUf(options) {
@@ -210,14 +223,55 @@ function resolveUf(options) {
 		u = ufFromIbge(options.ibge);
 		if (u) return u;
 	}
-	var lat = options.lat;
-	var lon = options.lng != null ? options.lng : options.lon;
-	if (lat == null && options.lat_min != null && options.lat_max != null) {
-		lat = (Number(options.lat_min) + Number(options.lat_max)) / 2;
-		lon = (Number(options.lng_min) + Number(options.lng_max)) / 2;
-	}
-	u = ufFromPoint(lat, lon, options.bboxes);
+	var p = pointOfOptions(options);
+	u = ufFromPoint(p.lat, p.lon, options.bboxes);
 	return u || 'XX';
+}
+
+/**
+ * UF da feature RESPEITANDO o filtro do run (`--uf` / `--region`).
+ *
+ * ─── por que isto existe ──────────────────────────────────────────────────
+ *
+ * `ufFromPoint` desempata caixas sobrepostas pela de MENOR ÁREA, e a de GO
+ * (52°²) é menor que a de MG (99°²). Rodando `--uf=MG`, uma via em Patrocínio
+ * (−18,93 / −46,97) cai nas duas e saía rotulada **GO** — enquanto
+ * `passesUfFilter` a MANTINHA no run, justamente por estar dentro da caixa de
+ * MG. Filtro e rótulo discordavam: a via era extraída e escrita em
+ * `OSM_LOGRADOURO_GEOM_GO`, onde nenhum consumidor de MG vai procurar.
+ *
+ * O estrago não é de borda. A caixa de GO cobre todo o Triângulo, o Alto
+ * Paranaíba e o Noroeste de MG; a da BA (91°²) cobre o norte. Na carga de MG do
+ * DDSOFT isso deixou 29.505 dos 96.426 ways referenciados sem traçado — e
+ * Patrocínio, cidade inteira de um cliente, com 3,5% de cobertura real
+ * (18/08/2026).
+ *
+ * ─── a regra ─────────────────────────────────────────────────────────────
+ *
+ * Tag e IBGE continuam mandando: são dado explícito da feature, e quem decide
+ * se ela entra ou não no run é o filtro, não o rótulo. Quando a UF sai só da
+ * GEOMETRIA e o run é filtrado, quem nomeia é a caixa PERMITIDA que contém o
+ * ponto — exatamente o critério que `passesUfFilter` já usa para manter a
+ * feature. Assim as duas decisões passam a sair da mesma conta.
+ *
+ * Efeito colateral aceito: num run `--uf=MG`, uma via realmente goiana que caia
+ * dentro do retângulo de MG passa a ser rotulada MG. Ela já era mantida no run
+ * (o filtro a aceitava) e já poluía a pasta de saída; o que muda é só o arquivo
+ * em que ela cai. Retângulo não separa MG de GO — o certo é polígono de UF, e
+ * está anotado em docs/geo/extrair-geom-brasil.md.
+ *
+ * Sem filtro (`ufAllow` nulo) o comportamento é o de sempre.
+ */
+function resolveUfFiltered(options, ufAllow) {
+	if (!ufAllow) return resolveUf(options);
+	options = options || {};
+	var byTag = ufFromTags(options.tags);
+	if (!byTag && options.ibge) byTag = ufFromIbge(options.ibge);
+	if (byTag) return byTag;
+	var p = pointOfOptions(options);
+	var allowed = ufFromPoint(p.lat, p.lon, bboxesForFilter(ufAllow));
+	if (allowed) return allowed;
+	return ufFromPoint(p.lat, p.lon, options.bboxes) || 'XX';
 }
 
 function extractIbge(tags) {
@@ -338,6 +392,7 @@ module.exports = {
 	ufFromTags: ufFromTags,
 	ufFromPoint: ufFromPoint,
 	resolveUf: resolveUf,
+	resolveUfFiltered: resolveUfFiltered,
 	extractIbge: extractIbge,
 	pointInBbox: pointInBbox,
 	parseUfFilter: parseUfFilter,
