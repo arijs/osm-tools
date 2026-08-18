@@ -100,14 +100,14 @@ Com join **26 cols** (`osm_way_ids`) + GEOM da UF:
 $env:NODE_OPTIONS="--max-old-space-size=8192"
 node scripts/dne-via-cruzamentos.js `
   --dne-geo=G:\dne-geo-conectores-fuzzy `
-  --geom=G:\osm-geo-br-geom\sp `
+  --geom=G:\osm-geo-br-uf `
   --out=G:\dne-geo-via-sp `
   --uf=SP
 
 # piloto RMSP:
 node scripts/dne-via-cruzamentos.js `
   --dne-geo=G:\dne-geo-conectores-fuzzy `
-  --geom=G:\osm-geo-br-geom\sp `
+  --geom=G:\osm-geo-br-uf `
   --out=G:\dne-geo-via-rmsp `
   --uf=SP `
   --bbox=-47.20,-24.05,-46.30,-23.20
@@ -124,7 +124,7 @@ cd D:\dev\ddsoft\ddsoft-online
 php bin/console doctrine:migrations:migrate
 php bin/console osm:dne:load-via `
   --dir=G:\dne-geo-conectores-fuzzy `
-  --geom-dir=G:\osm-geo-br-geom\sp `
+  --geom-dir=G:\osm-geo-br-uf `
   --via-dir=G:\dne-geo-via-rmsp `
   --uf=SP --dataset=all
 # --dataset=geom|ponto|ligacao  --dry-run
@@ -189,10 +189,22 @@ Pasta canônica da saída boa (2026-07-30): **`G:\dne-geo-local`**. `G:\dne-geo`
 
 Flags úteis: `--envelope-tol-km=1` (default), `--sem-envelope`, `--sem-exclusao-cluster`, `--quiet`.
 
-### Brasil (pós-extract por região)
+### Brasil — uma pasta só: `G:\osm-geo-br-uf`
 
-O join lê **flat ou shards** (`OSM_LOGRADOURO_{UF}/` + `MANIFEST.json`). Prefere shards se a
-pasta existir. Sudeste flat → fatiar com:
+Desde 18/08/2026 o join lê **`G:\osm-geo-br-uf`**, saída de
+[`scripts/relabel-uf.js`](../../scripts/relabel-uf.js): os extracts regionais reclassificados
+por **polígono** de UF, deduplicados, com as 27 UFs numa pasta só — logradouro, GEOM, addr e
+bairro. Acabou a tabela de "qual pasta regional serve qual UF": `--uf=XX` acha o dataset certo.
+
+O ganho não é cosmético. Mesmo código de join, mesmo DNE, só trocando a pasta OSM (MG):
+
+| `--osm=` | logradouros com coordenada | cobertura |
+|---|---:|---:|
+| `G:\osm-geo-br-sudeste` (rótulo antigo) | 60 038 | 46,6 % |
+| `G:\osm-geo-br-uf` (polígono) | **95 856** | **74,3 %** |
+
+O join continua lendo **flat ou shards** (`OSM_LOGRADOURO_{UF}/` + `MANIFEST.json`), preferindo
+shards. As pastas regionais antigas seguem no lugar; para fatiar uma flat:
 
 ```bash
 node scripts/shard-osm-txt.js --dir=G:\osm-geo-br-sudeste --shard-lines=20000
@@ -213,16 +225,16 @@ cd D:\dev\ddsoft\ddsoft-online
 
 # caminho certo: pasta do join (Brasil)
 # sem --uf: processa todas as UFs com DNE_GEO_* na pasta
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=logradouro --dry-run
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=logradouro
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=bairro
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-uf --dataset=logradouro --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-uf --dataset=logradouro
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-uf --dataset=bairro
 
 # uma UF só
-php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-br --dataset=logradouro --uf=SP --dry-run
+php bin/console osm:dne:enrich-geo --dir=G:\dne-geo-uf --dataset=logradouro --uf=SP --dry-run
 
 # legado OSM fatiado (sem DNE_GEO): shards nativos
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-br-norte --dataset=logradouro --uf=AM --legacy-match
-php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-br-norte --dataset=bairro --legacy-match
+php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-br-uf --dataset=logradouro --uf=AM --legacy-match
+php bin/console osm:dne:enrich-geo --dir=G:\osm-geo-br-uf --dataset=bairro --legacy-match
 ```
 
 Opções: `--uf=SP` (omitido = todas detectadas), `--overwrite`, `--legacy-match`,

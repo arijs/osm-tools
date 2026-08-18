@@ -38,6 +38,7 @@ Documento **operacional** (copiar e colar). Detalhe de desenho: [dne-geo-join.md
 
 | Pasta | Conteúdo | Papel |
 |-------|----------|--------|
+| **`G:\osm-geo-br-uf`** | **as 27 UFs re-rotuladas por polígono** (logradouro, GEOM, addr, bairro) | **Join de qualquer UF — comece por aqui** |
 | `G:\osm-geo-br-admin` | `OSM_ESTADO.TXT`, `OSM_MUNICIPIO.TXT` (`eof: true`) | Load em `locais` |
 | `G:\osm-geo-br-norte` | shards logradouro/bairro (AC, AM, AP, PA, RO, RR, TO, …) | Join das UFs do Norte |
 | `G:\osm-geo-br-nordeste` | shards (AL, BA, CE, MA, PB, PE, PI, RN, SE, …) | Join Nordeste |
@@ -66,7 +67,11 @@ Todas as pastas BR em `G:\` estão **completas** (`extract-checkpoint.json` → 
 | `osm-geo-br-sul` | ✅ | shards 20k | PR 203 609 · RS 140 222 · SC 214 110 |
 | `osm-geo-br-sudeste` | ✅ | **flat** (fatiar no Passo 1) | ES ~13 MB · MG ~32 MB · RJ ~35 MB · SP ~138 MB |
 
-**Nota:** pastas regionais podem ter UFs “vizinhas” a mais (vazamento de bbox, ex. MA no Norte). No join, use **sempre a pasta da região oficial da UF** (tabela no Passo 2).
+**Nota (superada em 18/08/2026):** as pastas regionais têm UFs “vizinhas” a mais, e pior, com o
+rótulo errado — o vazamento não era só de sobra, era de nome. Isso foi consertado de uma vez por
+[`scripts/relabel-uf.js`](../../scripts/relabel-uf.js), que reclassifica tudo por polígono e
+deduplica: **use `G:\osm-geo-br-uf` e ignore a tabela de região por UF.** As pastas regionais
+ficam como histórico.
 
 Se reprocessar e `eof` for false: recomece **só essa pasta** (sem `--resume` o extract apaga a `--out` — ver [extract-e-artefatos.md](./extract-e-artefatos.md)).
 

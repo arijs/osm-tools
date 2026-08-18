@@ -24,7 +24,7 @@ volta a fazer o que sabe: carregar por chave.
 ## Entradas e saídas
 
 ```
-D:\…\Delimitado\                       G:\osm-geo-br-nordeste\   (ex.)
+D:\…\Delimitado\                       G:\osm-geo-br-uf\   (nacional)
   LOG_LOCALIDADE.TXT   (latin1)          OSM_LOGRADOURO_{UF}.TXT   (flat)
   LOG_BAIRRO.TXT       (latin1)            ou OSM_LOGRADOURO_{UF}/  (shards)
   LOG_LOGRADOURO_{UF}.TXT (latin1)       OSM_ADDR_POINT_{UF}…      (opcional)
@@ -45,7 +45,7 @@ em ordem do `MANIFEST.json` (sem concatenar em disco).
 set NODE_OPTIONS=--max-old-space-size=8192
 node dne-geo-join.js ^
   --dne=D:\dev\ddsoft\ddsoft-online\_ignore\Delimitado ^
-  --osm=G:\osm-geo-br-sudeste ^
+  --osm=G:\osm-geo-br-uf ^
   --out=G:\dne-geo-br --uf=SP
 ```
 

@@ -194,7 +194,7 @@ php bin/console doctrine:migrations:migrate   # inclui Version20260811000100
 
 php bin/console osm:dne:load-via `
   --dir=G:\dne-geo-conectores-fuzzy `
-  --geom-dir=G:\osm-geo-br-geom\sp `
+  --geom-dir=G:\osm-geo-br-uf `
   --via-dir=G:\dne-geo-via-rmsp `
   --uf=SP `
   --dataset=all
