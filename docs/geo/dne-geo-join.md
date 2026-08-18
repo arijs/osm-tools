@@ -50,7 +50,7 @@ node dne-geo-join.js ^
 ```
 
 Opções: `--cluster-cell=0.02`, `--footprint-cell=0.01`, `--max-extent-km=15`,
-`--footprint-dilate=1`, `--envelope-tol-km=1`, `--sem-envelope`,
+`--footprint-dilate=1`, `--ancora-raio-km=60`, `--envelope-tol-km=1`, `--sem-envelope`,
 `--vizinho-cep5-tol-km=1`, `--vizinho-cep5-min=3`, `--sem-vizinho-cep5`,
 `--sem-exclusao-cluster`, `--quiet`.
 SP inteiro leva ~47 s.
@@ -76,6 +76,25 @@ conexas por vizinhança 8. Cada componente = uma via física distinta.
 
 Nome que existe em **um só** `loc_nu` do DNE **e** forma **um só** cluster no OSM → aquele cluster
 pertence àquele município, sem ambiguidade possível. Medido em SP: **126 096 nomes-âncora**.
+
+**"Sem ambiguidade possível" era otimismo.** A regra presume que o nome raro no DNE seja raro
+*no mundo*, e ela quebra quando o nome existe no OSM em outra cidade: `Catuaí` só aparece em
+Patrocínio no DNE de MG, e casou com o único cluster homônimo do estado — a ~500 km, em
+Malacacheta. A âncora entrou na pegada, a pegada passou a aceitar candidatos de lá, e a
+`Rua Afonso Pena` de Patrocínio ficou com o traçado de Águas Formosas. Erro que se
+retroalimenta: cada acerto falso vira centroide de bairro na 2ª volta e autoriza o próximo.
+
+Por isso a âncora é **podada** antes de virar pegada (`--ancora-raio-km`, default 60 km, 0
+desliga): os pontos vão para uma grade grossa de 0,05°, ganha a célula mais povoada, e sobrevive
+quem está a ≤ raio do centro dela (`geo.trimOutliers`). Moda espacial, não média — média seria
+arrastada pelo ponto que se quer expulsar. A poda vale também na reconstrução da 2ª volta.
+
+Medido em MG (2026-08-18): 1 487 pontos podados em 73 localidades. As linhas `ok` cujo centroide
+caía a **mais de 60 km da própria massa do município** foram de **13 444 (19,6 % de 68 453)** para
+**37 (0,06 % de 60 038)**; municípios contaminados, de 73/73 para 3/73. Em Patrocínio, as 46 ruas
+com centroide em outra cidade foram a zero, e 29 delas passaram a casar no lugar certo.
+O `ok` total cai (68 453 → 60 038) porque o que sai era, quase todo, casamento errado — o resto
+vira `fora_do_footprint`, que é ambíguo honesto.
 
 ### Fase 3 — footprint municipal
 

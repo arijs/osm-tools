@@ -100,3 +100,48 @@ test('distKm bate com a escala real', function () {
 	var d = geo.distKm(-23.5505, -46.6333, -23.5614, -46.6559);
 	assert.ok(d > 2 && d < 4, 'esperado ~3 km, veio ' + d);
 });
+
+// Âncora envenenada (DDSOFT, 18/08/2026): "Catuaí" só existe em Patrocínio no
+// DNE de MG e casou com o único cluster de mesmo nome do estado — a ~500 km, em
+// Malacacheta. Virou âncora, alargou a pegada, e o município passou a aceitar
+// candidatos de lá: a Rua Afonso Pena de Patrocínio ficou com o traçado de
+// Águas Formosas.
+test('trimOutliers fica com a massa do município', function () {
+	var patrocinio = [
+		f(-18.9375, -46.9856), f(-18.9440, -46.9910), f(-18.9502, -46.9930),
+		f(-18.9410, -46.9800), f(-18.9390, -46.9770)
+	];
+	var longe = [f(-17.6992, -42.5301), f(-18.8569, -41.9507)];
+
+	var r = geo.trimOutliers(patrocinio.concat(longe), 60);
+	assert.equal(r.dropped, 2);
+	assert.equal(r.points.length, 5);
+	r.points.forEach(function (p) {
+		assert.ok(geo.distKm(p.lat, p.lng, -18.94, -46.99) < 60);
+	});
+});
+
+test('trimOutliers não poda espalhamento legítimo de município grande', function () {
+	// sede + distrito a ~40 km: os dois continuam dentro do raio
+	var pts = [
+		f(-18.9375, -46.9856), f(-18.9440, -46.9910), f(-18.9502, -46.9930),
+		f(-19.2500, -47.2000)
+	];
+	var r = geo.trimOutliers(pts, 60);
+	assert.equal(r.dropped, 0);
+	assert.equal(r.points.length, 4);
+});
+
+test('trimOutliers desligado, degenerado e nunca vazio', function () {
+	var pts = [f(-18.9375, -46.9856), f(-17.6992, -42.5301)];
+	// raio 0 (ou negativo) desliga a poda
+	assert.equal(geo.trimOutliers(pts, 0).dropped, 0);
+	assert.equal(geo.trimOutliers(pts, 0).points.length, 2);
+	// um ponto só não tem massa para comparar
+	assert.equal(geo.trimOutliers([pts[0]], 60).points.length, 1);
+	assert.deepEqual(geo.trimOutliers(null, 60), { points: [], dropped: 0 });
+	// dois pontos distantes: sobra a massa vencedora, nunca lista vazia
+	var r = geo.trimOutliers(pts, 60);
+	assert.equal(r.points.length, 1);
+	assert.equal(r.dropped, 1);
+});

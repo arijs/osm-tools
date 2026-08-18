@@ -16,6 +16,7 @@
  *     --footprint-cell=0.01 célula do footprint municipal (graus)
  *     --max-extent-km=15    acima disso, com mais de um candidato, vira `ambiguo`
  *     --footprint-dilate=1  células de halo na pegada municipal
+ *     --ancora-raio-km=60   descarta âncora fora da massa do município (0 desliga)
  *     --envelope-tol-km=1   recupera fora_do_footprint com 1 candidato a ≤N km da mancha
  *     --sem-envelope        desliga a recuperação por envelope
  *     --vizinho-cep5-tol-km=1  recupera fora_do_footprint e pós-conflito por CEP-5 (km)
@@ -498,6 +499,9 @@ async function run(opts) {
 	var footprintCell = opts.footprintCell || geo.CELL_FOOTPRINT;
 	var maxExtentKm = opts.maxExtentKm || 15;
 	var dilate = opts.footprintDilate == null ? 1 : opts.footprintDilate;
+	// 60 km: cabe o maior município de MG (raio ~56 km) e o espalhamento normal
+	// de um distrito; não cabe a âncora de outra cidade, que erra por centenas.
+	var ancoraRaioKm = opts.ancoraRaioKm == null ? 60 : opts.ancoraRaioKm;
 	var envelopeTolKm = opts.envelopeTolKm == null ? 1 : opts.envelopeTolKm;
 	var useEnvelope = opts.semEnvelope ? false : true;
 	var useExclusao = opts.semExclusaoCluster ? false : true;
@@ -584,7 +588,16 @@ async function run(opts) {
 
 	var footprints = new Map();
 	var centroLoc = new Map();   // diagnóstico: centro e raio das âncoras do município
+	// Âncora de outra cidade alarga a pegada e faz o município aceitar candidato
+	// de lá — ver geo.trimOutliers. Poda antes de construir pegada E centro:
+	// os dois são usados como "onde este município fica".
+	var ancorasPodadas = 0;
+	var locsPodadas = 0;
 	pontosPorLoc.forEach(function (pts, loc) {
+		var poda = geo.trimOutliers(pts, ancoraRaioKm);
+		if (poda.dropped) { ancorasPodadas += poda.dropped; locsPodadas++; }
+		pts = poda.points;
+		pontosPorLoc.set(loc, pts);
 		footprints.set(loc, geo.buildFootprint(pts, footprintCell, dilate));
 		var sLat = 0, sLng = 0;
 		for (var i = 0; i < pts.length; i++) { sLat += pts[i].lat; sLng += pts[i].lng; }
@@ -603,7 +616,11 @@ async function run(opts) {
 		var pai = footprints.get(l.sub);
 		if (pai) { footprints.set(l.loc_nu, pai); herdados++; }
 	});
-	log('      ancoras=' + ancoras + ' footprints=' + footprints.size + ' (herdados=' + herdados + ')');
+	log('      ancoras=' + ancoras + ' footprints=' + footprints.size + ' (herdados=' + herdados + ')'
+		+ (ancoraRaioKm > 0
+			? ' | podadas=' + ancorasPodadas + ' pontos em ' + locsPodadas +
+				' localidades (raio=' + ancoraRaioKm + ' km)'
+			: ' | poda de âncora desligada'));
 
 	// ---- Fase 4/5: cascata + desempate, em duas voltas
 	log('[5/6] casando…');
@@ -719,7 +736,10 @@ async function run(opts) {
 		}
 		extra.forEach(function (pts, loc) {
 			var base = pontosPorLoc.get(loc) || [];
-			footprints.set(loc, geo.buildFootprint(base.concat(pts), footprintCell, dilate));
+			// Poda também aqui: o que a 1ª volta casou entra na pegada da 2ª, e um
+			// acerto duvidoso longe da cidade se tornaria licença para os próximos.
+			var podados = geo.trimOutliers(base.concat(pts), ancoraRaioKm).points;
+			footprints.set(loc, geo.buildFootprint(podados, footprintCell, dilate));
 		});
 		for (var w2 = 0; w2 < rows.length; w2++) {
 			if (rows[w2].status !== 'ok') rows[w2].status = 'pendente';
@@ -1137,6 +1157,7 @@ async function run(opts) {
 		osm_dir: opts.osmDir,
 		cluster_cell: clusterCell,
 		footprint_cell: footprintCell,
+		ancora_raio_km: ancoraRaioKm,
 		linhas_dne: rows.length,
 		osm: {
 			linhas: osm.lines, sem_geom: osm.semGeom, nomes: built.byName.size,
@@ -1190,6 +1211,7 @@ function parseCli(argv) {
 		else if (a.indexOf('--footprint-cell=') === 0) o.footprintCell = Number(a.slice(17));
 		else if (a.indexOf('--max-extent-km=') === 0) o.maxExtentKm = Number(a.slice(16));
 		else if (a.indexOf('--footprint-dilate=') === 0) o.footprintDilate = Number(a.slice(19));
+		else if (a.indexOf('--ancora-raio-km=') === 0) o.ancoraRaioKm = Number(a.slice(17));
 		else if (a.indexOf('--envelope-tol-km=') === 0) o.envelopeTolKm = Number(a.slice(18));
 		else if (a === '--sem-envelope') o.semEnvelope = true;
 		else if (a.indexOf('--vizinho-cep5-tol-km=') === 0) o.vizinhoCep5TolKm = Number(a.slice(22));

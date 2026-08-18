@@ -11,6 +11,7 @@
 
 var CELL_CLUSTER = 0.02;   // ~2,2 km — separa vias homônimas dentro do município
 var CELL_FOOTPRINT = 0.01; // ~1,1 km — resolução da pegada municipal
+var CELL_MASSA = 0.05;     // ~5,5 km — grade grossa que acha a massa do município
 
 function cellKey(lat, lng, cell) {
 	return Math.floor(lat / cell) + ':' + Math.floor(lng / cell);
@@ -106,6 +107,65 @@ function aggregate(feats) {
 }
 
 /**
+ * Descarta pontos-âncora que não pertencem à MASSA do município.
+ *
+ * ─── de onde veio ────────────────────────────────────────────────────────
+ *
+ * Âncora é "nome que existe em um só `loc_nu` do DNE e casa com um só cluster
+ * no OSM" — presume-se que seja aquele município. A presunção quebra quando o
+ * nome é raro no DNE mas existe no OSM em OUTRA cidade: "Catuaí" só aparece em
+ * Patrocínio no DNE de MG e casou com o único cluster de mesmo nome do estado,
+ * a ~500 km. A âncora entrou na pegada, e a pegada passou a aceitar candidatos
+ * de lá: a Rua Afonso Pena de Patrocínio ficou com o traçado de Águas Formosas,
+ * e outras dez ruas com centróide na cidade errada (DDSOFT, 18/08/2026).
+ *
+ * Uma âncora errada não erra sozinha: ela alarga a pegada, o que deixa passar
+ * mais candidatos errados, que viram centróide de bairro na 2ª volta e reforçam
+ * o engano.
+ *
+ * ─── como decide ─────────────────────────────────────────────────────────
+ *
+ * Moda espacial, não média: os pontos vão para uma grade grossa, ganha a célula
+ * mais povoada, e sobrevive quem está a ≤ `maxKm` do centro dela. Média (ou
+ * centróide) seria arrastada justamente pelo ponto distante que se quer expulsar.
+ *
+ * Nunca devolve vazio: com tudo espalhado, sobra ao menos a massa vencedora —
+ * pegada pequena demais vira `fora_do_footprint`, que é ambíguo honesto, e não
+ * uma rua em outra cidade com cara de acerto.
+ *
+ * @returns {{points: Array, dropped: number}}
+ */
+function trimOutliers(points, maxKm, cell) {
+	if (!points || points.length < 2 || !(maxKm > 0)) {
+		return { points: points || [], dropped: 0 };
+	}
+	cell = cell || CELL_MASSA;
+	var buckets = new Map();
+	for (var i = 0; i < points.length; i++) {
+		var k = cellKey(points[i].lat, points[i].lng, cell);
+		var b = buckets.get(k);
+		if (!b) buckets.set(k, b = { n: 0, sLat: 0, sLng: 0 });
+		b.n++;
+		b.sLat += points[i].lat;
+		b.sLng += points[i].lng;
+	}
+	// Empate resolve pela primeira célula vista — a ordem de inserção é a dos
+	// pontos, então o resultado é determinístico para a mesma entrada.
+	var melhor = null;
+	buckets.forEach(function (b) {
+		if (!melhor || b.n > melhor.n) melhor = b;
+	});
+	var cLat = melhor.sLat / melhor.n;
+	var cLng = melhor.sLng / melhor.n;
+	var kept = [];
+	for (var j = 0; j < points.length; j++) {
+		if (distKm(cLat, cLng, points[j].lat, points[j].lng) <= maxKm) kept.push(points[j]);
+	}
+	if (!kept.length) return { points: points, dropped: 0 };
+	return { points: kept, dropped: points.length - kept.length };
+}
+
+/**
  * Pegada do município: grade de células ocupadas pelos pontos-âncora, dilatada
  * em `dilate` células para cobrir borda.
  *
@@ -160,9 +220,11 @@ module.exports = {
 	clusterFeatures: clusterFeatures,
 	aggregate: aggregate,
 	buildFootprint: buildFootprint,
+	trimOutliers: trimOutliers,
 	inFootprint: inFootprint,
 	footprintOverlap: footprintOverlap,
 	distKm: distKm,
 	CELL_CLUSTER: CELL_CLUSTER,
-	CELL_FOOTPRINT: CELL_FOOTPRINT
+	CELL_FOOTPRINT: CELL_FOOTPRINT,
+	CELL_MASSA: CELL_MASSA
 };
