@@ -35,28 +35,38 @@ Os extracts atuais têm `datasets.geom: false` (ou omitido): há `OSM_LOGRADOURO
 ## A UF da fatia manda no nome do arquivo
 
 Cada way é rotulado por `ufBr.resolveUfFiltered`: tag/IBGE primeiro; faltando os dois, o
-**retângulo permitido pelo run** que contém o ponto. Sem essa segunda parte — como era até
-17/08/2026 — o rótulo saía do desempate global "menor retângulo vence", e as caixas se
-sobrepõem de propósito:
+**polígono da UF** que contém o ponto (`uf-poly.js` + `uf-poly.json`, malha do IBGE
+simplificada). Desde 18/08/2026 é o polígono quem decide — e é a mesma conta que
+`passesUfFilter` usa para manter ou descartar a feature.
 
-| UF | área do retângulo | engole |
+Antes disso decidia retângulo, e as caixas se sobrepõem de propósito:
+
+| UF | área do retângulo | engolia |
 |---|---|---|
 | GO | 52°² | Triângulo, Alto Paranaíba e Noroeste de MG |
 | BA | 91°² | norte de MG |
-| MG | 99°² | — |
+| MG | 99°² | pedaços de SP, RJ, ES, GO e BA |
 
-Resultado prático da fatia `--only=mg`: as vias de Patrocínio foram escritas em
-`OSM_LOGRADOURO_GEOM_GO`, e o consumidor que lê `..._MG` não achava traçado nenhum. No DDSOFT
-isso deixou **29 505 dos 96 426** ways referenciados pelo join de MG sem polyline (18/08/2026).
+Resultado prático da fatia `--only=mg` com o desempate "menor retângulo vence": as vias de
+Patrocínio foram escritas em `OSM_LOGRADOURO_GEOM_GO`, e o consumidor que lê `..._MG` não
+achava traçado nenhum. No DDSOFT isso deixou **29 505 dos 96 426** ways referenciados pelo
+join de MG sem polyline (18/08/2026). O paliativo do mesmo dia — deixar a caixa **permitida**
+nomear — consertou Patrocínio e, do outro lado, varreu a vizinhança para dentro do arquivo de
+MG: reclassificando o `OSM_LOGRADOURO_MG` daquele run, só **339 065 de 1 007 314** linhas
+estavam mesmo em MG.
 
-Duas consequências para quem opera:
+O que vale para quem opera, agora:
 
-- **A pasta de saída de uma fatia contém datasets de várias UFs.** Isso é esperado — o filtro
-  mantém o que cai dentro do retângulo permitido — e continua valendo depois da correção, para
-  ways que trazem tag/IBGE de UF vizinha. Ao consumir, considere os arquivos vizinhos.
-- **Retângulo não separa MG de GO.** A correção faz o rótulo concordar com o filtro do run, que
-  é o que o pipeline usa; o certo mesmo é polígono de UF (ou resolver por município/IBGE antes
-  de cair no ponto), e isso continua em aberto.
+- **A fatia só grava o que é dela.** Feature que o polígono põe fora das UFs permitidas é
+  descartada do run — ela aparece na fatia da UF a que pertence (as oito fatias cobrem as 27
+  UFs). A pasta ainda pode ganhar um dataset vizinho quando a própria feature traz **tag ou
+  IBGE** de outra UF: aí o dado explícito manda, e o arquivo leva o nome certo.
+- **Ponto no mar** (píer, plataforma, trecho ao largo) fica fora de todos os polígonos: aí, e
+  só aí, o retângulo antigo ainda responde, para que nada que hoje tem rótulo vire `XX`.
+- **Ponto exatamente sobre a divisa** pertence às duas UFs; vence a primeira em ordem
+  alfabética. Regra arbitrária, mas fixa — o pipeline é retomável e comparado entre execuções.
+- **Regerar a malha**: `node scripts/build-uf-poly.js` (baixa do IBGE, simplifica e reescreve
+  `uf-poly.json`). O runtime não vai à rede.
 
 ---
 
