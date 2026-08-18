@@ -21,12 +21,33 @@ function linhaLogradouro(id, uf, lat, lng, tipo) {
 	return c;
 }
 
+function linhaBairro(id, uf, lat, lng) {
+	var c = new Array(15).fill('');
+	c[0] = 'node';
+	c[1] = String(id);
+	c[2] = 'Bairro ' + id;
+	c[3] = 'bairro ' + id;
+	c[4] = uf;
+	c[8] = String(lat);
+	c[9] = String(lng);
+	return c;
+}
+
+function linhaAddr(id, lat, lng) {
+	var c = new Array(10).fill('');
+	c[0] = String(id);
+	c[1] = String(lat);
+	c[2] = String(lng);
+	c[3] = 'Rua ' + id;
+	return c;
+}
+
 /** polyline do GEOM: primeiro ponto absoluto em 1e-6 de grau, resto em deltas */
 function polyline(lat, lng) {
 	return Math.round(lat * 1e6) + ',' + Math.round(lng * 1e6) + ';1000,1000';
 }
 
-function montarFatia(base, nome, logradouro, geom) {
+function montarFatia(base, nome, logradouro, geom, bairro, addr) {
 	var dir = path.join(base, nome);
 	var w = txtAt.createTxtAtWriter(dir, { shardLines: 2 });
 	logradouro.forEach(function (l) {
@@ -34,6 +55,12 @@ function montarFatia(base, nome, logradouro, geom) {
 	});
 	geom.forEach(function (g) {
 		w.write('OSM_LOGRADOURO_GEOM_' + g.uf, [String(g.id), g.polyline, '0']);
+	});
+	(bairro || []).forEach(function (b) {
+		w.write('OSM_BAIRRO', b);
+	});
+	(addr || []).forEach(function (a) {
+		w.write('OSM_ADDR_POINT_' + a.uf, a.campos);
 	});
 	return w.flush();
 }
@@ -83,7 +110,9 @@ test('relabel-uf — polígono manda, GEOM segue o irmão, duplicata entra uma v
 			// a via 100 começa do outro lado da divisa: sozinho, este ponto daria GO
 			{ id: 100, uf: 'MG', polyline: polyline(CATALAO[0], CATALAO[1]) },
 			{ id: 200, uf: 'MG', polyline: polyline(RIO[0], RIO[1]) }
-		]
+		],
+		[linhaBairro(700, 'MG', RIO[0], RIO[1]), linhaBairro(701, 'MG', PATROCINIO[0], PATROCINIO[1])],
+		[{ uf: 'MG', campos: linhaAddr(800, CATALAO[0], CATALAO[1]) }]
 	);
 
 	// fatia rj: viu a mesma praça do Rio (o retângulo do RJ também a continha) e
@@ -99,10 +128,11 @@ test('relabel-uf — polígono manda, GEOM segue o irmão, duplicata entra uma v
 	);
 
 	var r = await relabelUf.relabel({ base: base, out: out, shardLines: 2 });
+	var lgr = r.por_familia.logradouro;
 
-	assert.equal(r.logradouro.lidas, 6);
-	assert.equal(r.logradouro.duplicadas, 1, 'a praça do Rio foi vista por duas fatias');
-	assert.equal(r.logradouro.gravadas, 5);
+	assert.equal(lgr.lidas, 6);
+	assert.equal(lgr.duplicadas, 1, 'a praça do Rio foi vista por duas fatias');
+	assert.equal(lgr.gravadas, 5);
 
 	var mg = lerDataset(out, 'OSM_LOGRADOURO_MG');
 	assert.deepEqual(mg.map(function (l) { return l[0]; }).sort(), ['100', '400']);
@@ -122,13 +152,75 @@ test('relabel-uf — polígono manda, GEOM segue o irmão, duplicata entra uma v
 	assert.deepEqual(lerDataset(out, 'OSM_LOGRADOURO_GEOM_MG').map(function (l) { return l[0]; }), ['100']);
 	assert.equal(lerDataset(out, 'OSM_LOGRADOURO_GEOM_GO'), null);
 	assert.deepEqual(lerDataset(out, 'OSM_LOGRADOURO_GEOM_RJ').map(function (l) { return l[0]; }), ['200']);
-	assert.equal(r.geom.duplicadas, 1);
-	assert.equal(r.geom.sem_irmao, 0);
+	assert.equal(r.por_familia.geom.duplicadas, 1);
+	assert.equal(r.por_familia.geom.sem_irmao, 0);
 
-	var resumo = JSON.parse(fs.readFileSync(path.join(out, 'RELABEL-SUMMARY.json'), 'utf8'));
-	assert.equal(resumo.logradouro.de_para['MG→RJ'], 1);
-	assert.equal(resumo.logradouro.de_para['MG→GO'], 1);
+	// OSM_BAIRRO é dataset único: o que muda é a coluna uf, não o arquivo
+	var bairro = lerDataset(out, 'OSM_BAIRRO');
+	assert.deepEqual(
+		bairro.map(function (l) { return l[1] + ':' + l[4]; }).sort(),
+		['700:RJ', '701:MG']
+	);
+
+	// addr point não tem coluna uf: o rótulo vinha do nome do dataset
+	assert.deepEqual(lerDataset(out, 'OSM_ADDR_POINT_GO').map(function (l) { return l[0]; }), ['800']);
+	assert.equal(lerDataset(out, 'OSM_ADDR_POINT_MG'), null);
+
+	var doc = JSON.parse(fs.readFileSync(path.join(out, 'RELABEL-SUMMARY.json'), 'utf8'));
+	var resumo = doc.runs[doc.runs.length - 1];
+	assert.equal(resumo.por_familia.logradouro.de_para['MG→RJ'], 1);
+	assert.equal(resumo.por_familia.logradouro.de_para['MG→GO'], 1);
+	assert.equal(resumo.por_familia.addr.de_para['MG→GO'], 1);
 	assert.ok(String(resumo.malha.fonte).indexOf('ibge.gov.br') >= 0);
+});
+
+test('relabel-uf — --datasets acrescenta à mesma pasta sem tocar no resto', async function (t) {
+	var base = fs.mkdtempSync(path.join(os.tmpdir(), 'relabel-inc-'));
+	var out = fs.mkdtempSync(path.join(os.tmpdir(), 'relabel-inc-out-'));
+	t.after(function () {
+		fs.rmSync(base, { recursive: true, force: true });
+		fs.rmSync(out, { recursive: true, force: true });
+	});
+
+	await montarFatia(
+		base,
+		'sudeste',
+		[linhaLogradouro(1, 'MG', RIO[0], RIO[1])],
+		[],
+		[linhaBairro(2, 'MG', RIO[0], RIO[1])],
+		[]
+	);
+
+	await relabelUf.relabel({ base: base, out: out, shardLines: 2, datasets: ['logradouro'] });
+	assert.equal(lerDataset(out, 'OSM_BAIRRO'), null);
+
+	await relabelUf.relabel({ base: base, out: out, shardLines: 2, datasets: ['bairro'] });
+	assert.deepEqual(lerDataset(out, 'OSM_LOGRADOURO_RJ').map(function (l) { return l[0]; }), ['1']);
+	assert.deepEqual(lerDataset(out, 'OSM_BAIRRO').map(function (l) { return l[4]; }), ['RJ']);
+
+	var doc = JSON.parse(fs.readFileSync(path.join(out, 'RELABEL-SUMMARY.json'), 'utf8'));
+	assert.equal(doc.runs.length, 2, 'cada corrida deixa seu resumo');
+
+	// regravar a mesma família reabriria o shard 000001 do zero: tem de recusar
+	assert.throws(function () {
+		relabelUf.relabel({ base: base, out: out, shardLines: 2, datasets: ['bairro'] });
+	}, /já tem/);
+});
+
+test('relabel-uf — --dirs aponta as fatias uma a uma', async function (t) {
+	var base = fs.mkdtempSync(path.join(os.tmpdir(), 'relabel-dirs-'));
+	var out = fs.mkdtempSync(path.join(os.tmpdir(), 'relabel-dirs-out-'));
+	t.after(function () {
+		fs.rmSync(base, { recursive: true, force: true });
+		fs.rmSync(out, { recursive: true, force: true });
+	});
+
+	await montarFatia(base, 'mg', [linhaLogradouro(9, 'MG', PATROCINIO[0], PATROCINIO[1])], []);
+	var r = await relabelUf.relabel({
+		dirs: [path.join(base, 'mg')], out: out, shardLines: 2, datasets: ['logradouro']
+	});
+	assert.deepEqual(r.fatias, ['mg']);
+	assert.deepEqual(lerDataset(out, 'OSM_LOGRADOURO_MG').map(function (l) { return l[0]; }), ['9']);
 });
 
 test('relabel-uf — dry-run não escreve nada', async function (t) {
@@ -142,8 +234,8 @@ test('relabel-uf — dry-run não escreve nada', async function (t) {
 	await montarFatia(base, 'mg', [linhaLogradouro(1, 'MG', RIO[0], RIO[1])], []);
 	var r = await relabelUf.relabel({ base: base, out: out, shardLines: 2, dryRun: true });
 
-	assert.equal(r.logradouro.gravadas, 1);
-	assert.equal(r.logradouro.por_uf.RJ, 1);
+	assert.equal(r.por_familia.logradouro.gravadas, 1);
+	assert.equal(r.por_familia.logradouro.por_uf.RJ, 1);
 	assert.deepEqual(fs.readdirSync(out), []);
 });
 
