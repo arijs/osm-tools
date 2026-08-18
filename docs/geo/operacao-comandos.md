@@ -76,6 +76,62 @@ Regiões: `norte`, `nordeste`, `centro-oeste` (aliases `co`, `centrooeste`),
 (coords só na pass2); o filtro final descarta o que cair fora do bbox da fatia.
 Waves evitam o crash mesmo sem filtro.
 
+### Traçado completo (GEOM) — Brasil
+
+Os extracts acima **não** geram `OSM_LOGRADOURO_GEOM_*` (só centróide/bbox). Para o
+polyline, use o orquestrador retomável (doc curta):
+
+→ [**extrair-geom-brasil.md**](./extrair-geom-brasil.md)
+
+```powershell
+$env:NODE_OPTIONS="--max-old-space-size=8192"
+node scripts/extract-brasil-way-geom.js --list
+node scripts/extract-brasil-way-geom.js              # G:\osm-geo-br-geom\
+node scripts/extract-brasil-way-geom.js --only=sp    # uma fatia; Ctrl+C e retoma
+```
+
+### Cruzamentos + densificação (~111 m)
+
+Com join **26 cols** (`osm_way_ids`) + GEOM da UF:
+
+→ [**via-cruzamentos-densificar.md**](./via-cruzamentos-densificar.md)
+
+```powershell
+$env:NODE_OPTIONS="--max-old-space-size=8192"
+node scripts/dne-via-cruzamentos.js `
+  --dne-geo=G:\dne-geo-conectores-fuzzy `
+  --geom=G:\osm-geo-br-geom\sp `
+  --out=G:\dne-geo-via-sp `
+  --uf=SP
+
+# piloto RMSP:
+node scripts/dne-via-cruzamentos.js `
+  --dne-geo=G:\dne-geo-conectores-fuzzy `
+  --geom=G:\osm-geo-br-geom\sp `
+  --out=G:\dne-geo-via-rmsp `
+  --uf=SP `
+  --bbox=-47.20,-24.05,-46.30,-23.20
+```
+
+Saída: `DNE_GEO_VIA_PONTO_{UF}.TXT`, `DNE_GEO_VIA_LIGACAO_{UF}.TXT`, relatório JSON.
+
+### Load via no ddsoft (GEOM + pontos + ligações)
+
+Não usa `osm:dne:enrich-geo` (só centróide). Comando irmão:
+
+```powershell
+cd D:\dev\ddsoft\ddsoft-online
+php bin/console doctrine:migrations:migrate
+php bin/console osm:dne:load-via `
+  --dir=G:\dne-geo-conectores-fuzzy `
+  --geom-dir=G:\osm-geo-br-geom\sp `
+  --via-dir=G:\dne-geo-via-rmsp `
+  --uf=SP --dataset=all
+# --dataset=geom|ponto|ligacao  --dry-run
+```
+
+Doc: [geometria-via-destaque.md §5](./geometria-via-destaque.md), [via-cruzamentos-densificar.md](./via-cruzamentos-densificar.md).
+
 ### Resume (pass 1 apenas confiável)
 
 ```bash

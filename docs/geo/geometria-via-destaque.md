@@ -60,12 +60,23 @@ Opt-in: `--way-geom` (ou `--datasets=logradouro,geom`; pedir `geom` sem `logrado
 logradouro junto, senão a saída seria silenciosamente vazia).
 
 ```
-osm_id@polyline
+osm_id@polyline@oneway
 ```
 
 Irmão de `OSM_LOGRADOURO_{UF}`: mesma UF, mesmo filtro de fatia, mesmo fatiamento por
 `--shard-lines`. **Todo `osm_id` daqui existe lá; o inverso não vale** — nó e way sem nó
 resolvido ficam de fora.
+
+`oneway` compacto (tag OSM `oneway`):
+
+| código | significado |
+|--------|-------------|
+| `0` | ausente (sem tag) |
+| `1` | frente (`yes` / `true` / `1`) — sentido dos nós da way |
+| `2` | reverso (`-1` / `reverse`) |
+| `3` | mão dupla explícita (`no` / `false` / `0`) |
+
+Outros valores (`alternating`, …) → `0`. Codec: `osm-oneway.js`.
 
 Arquivo separado, e não uma coluna a mais na linha de logradouro, por dois motivos: o
 `dne-geo-join.js` lê o arquivo de logradouro inteiro e não tem uso para geometria (pagaria
@@ -138,40 +149,67 @@ O número real sai do primeiro extract com `--way-geom`: o resumo imprime
 `Geom: N vias, M pontos (sem traçado: K)`. **Trocar estas estimativas pelos números medidos
 quando eles existirem** — o resto deste documento não depende delas.
 
-## 5. Roteiro do ddsoft (não começado)
+## 5. Roteiro do ddsoft
+
+> **Schema + CLI de carga: feitos** (`Version20260811000100`, `osm:dne:load-via`).  
+> GraphQL / frontend de destaque: ainda abertos (§5.3–5.4).
 
 ### 5.1 Migrations
 
-Duas tabelas de infra, fora do modelo drawDB, como as `dne_idx_*` (mesma justificativa:
-índice regenerável, não catálogo de produto):
+Quatro tabelas de infra, fora do modelo drawDB, como as `dne_idx_*` (índice regenerável).
+Todas levam `ufe_sg` para wipe+reload por UF. Sem `SPATIAL`: `DOUBLE` + btree `(lat,lng)`.
 
 ```
-dne_geo_via              osm_id (PK, BIGINT)  uf CHAR(2)  pontos MEDIUMTEXT
-                         n_pontos SMALLINT UNSIGNED       atualizado_em DATETIME
+dne_geo_via              osm_id (PK)  ufe_sg  oneway TINYINT 0–3
+                         pontos MEDIUMTEXT  n_pontos  atualizado_em
 
-dne_idx_logradouro_via   log_nu INT  osm_id BIGINT   PK (log_nu, osm_id)  KEY (osm_id)
+dne_idx_logradouro_via   log_nu  osm_id  ufe_sg   PK (log_nu, osm_id)  KEY (osm_id)
+
+dne_geo_via_ponto        id AI  log_nu  ufe_sg  lat  lng
+                         origem ENUM(vertice|cruzamento|conexao|amostra)  osm_id
+                         KEY (lat,lng)  KEY (log_nu)
+
+dne_geo_via_ligacao      id AI  log_nu_a  log_nu_b  ufe_sg  lat  lng
+                         tipo ENUM(cruzamento|conexao)  osm_id_a  osm_id_b
+                         KEY (log_nu_a, log_nu_b)  KEY (lat,lng)
 ```
+
+`oneway`: `0` ausente · `1` frente · `2` reverso · `3` mão dupla explícita (mesmo codec do GEOM).
 
 Por que tabela de ligação e não uma coluna `osm_way_ids` em `dne_idx_logradouro`: a cauda de
 207 ways estoura qualquer `VARCHAR` razoável, e a ligação normalizada responde de graça
 "quantos logradouros têm traçado" e "esta way serve a quantas faixas de CEP".
 
 `pontos` como texto (a mesma polyline do artefato) e **não** como `LINESTRING`/`SPATIAL`: a
-consulta é `WHERE osm_id IN (…)`, um lookup por chave. Tipo espacial só se paga quando a
-pergunta for espacial ("que vias cruzam este retângulo") — e aí a decisão é outra, com
-índice e SRID. Vale a mesma nota de `estrutura-dados-endereco.md` §11.2 sobre `DOUBLE`.
+consulta de destaque é `WHERE osm_id IN (…)`. Proximidade usa `dne_geo_via_ponto` com
+índice btree — mesma decisão medida de `Version20260804000100`.
 
 ### 5.2 Carregador
 
-Estender `osm:dne:enrich-geo` (que já prefere `DNE_GEO_*` e resolve flat/shard pelo
-`resolveDatasetPaths`) ou comando irmão `osm:dne:load-via-geom --dir=… --uf=SP`:
+Comando irmão (não misturar com centróide em `osm:dne:enrich-geo`):
 
-1. Ler `DNE_GEO_LOGRADOURO_{UF}` → povoar `dne_idx_logradouro_via` a partir da coluna 26
-   (só `geo_status=ok`), acumulando o conjunto de `osm_id` **usados**.
-2. Ler `OSM_LOGRADOURO_GEOM_{UF}` em streaming → gravar em `dne_geo_via` **só** os ids
-   usados. É o que separa ~50 MB de ~20 MB, e o que evita guardar o traçado de way que
-   nenhuma linha DNE reivindica.
-3. Idempotente por `osm_id` (upsert) e por par (`log_nu`, `osm_id`).
+```bash
+cd D:\dev\ddsoft\ddsoft-online
+php bin/console doctrine:migrations:migrate   # inclui Version20260811000100
+
+php bin/console osm:dne:load-via `
+  --dir=G:\dne-geo-conectores-fuzzy `
+  --geom-dir=G:\osm-geo-br-geom\sp `
+  --via-dir=G:\dne-geo-via-rmsp `
+  --uf=SP `
+  --dataset=all
+# --dataset=geom|ponto|ligacao|all   --dry-run
+```
+
+| `--dataset` | Lê | Escreve |
+|-------------|-----|---------|
+| `geom` | `DNE_GEO_LOGRADOURO_{UF}` col.26 ok + `OSM_LOGRADOURO_GEOM_{UF}` | wipe UF em `dne_idx_logradouro_via` + `dne_geo_via`; só `osm_id` usados |
+| `ponto` | `DNE_GEO_VIA_PONTO_{UF}` | wipe UF + bulk insert |
+| `ligacao` | `DNE_GEO_VIA_LIGACAO_{UF}` | wipe UF + bulk insert |
+
+Ordem natural: **geom → ponto → ligacao** (`all` nesta ordem). Idempotência: `DELETE WHERE ufe_sg=?` depois carga completa.
+
+Código: `App\Osm\DneViaLoader` + `App\Command\Osm\OsmDneLoadViaCommand`.
 
 ### 5.3 GraphQL
 
@@ -192,6 +230,8 @@ quadra interrompida) desenharia um traço fantasma ligando as pontas.
 
 Vale expor também `tem_geometria: Boolean` em `buscar_dne_area`, para a lista do painel
 poder marcar quais resultados vão destacar antes do clique.
+
+Proximidade (depois): bbox em `dne_geo_via_ponto` → `DISTINCT log_nu`. Vizinhos: `dne_geo_via_ligacao`.
 
 ### 5.4 Frontend
 
@@ -237,15 +277,19 @@ por vez o endpoint é muito menos trabalho, então fica como caminho de escala: 
 - [x] `geo-polyline.js` — codec + testes (incl. contra o sanitizador `@`)
 - [x] `extract-geocode-pbf.js` — `--way-geom` → `OSM_LOGRADOURO_GEOM_{UF}`, shards, resumo, README-colunas
 - [x] `dne-geo-join.js` — coluna 26 `osm_way_ids` (determinística, sem `addr`)
-- [ ] Rodar `--way-geom` em SP e trocar as estimativas de §4.4 pelos números medidos
-- [ ] Re-rodar o join nas UFs já carregadas (a coluna 26 não existe nos TXT antigos)
-- [ ] ddsoft: migrations `dne_geo_via` + `dne_idx_logradouro_via`
-- [ ] ddsoft: carregador (só ids usados)
+- [x] Orquestrador Brasil retomável — [`extrair-geom-brasil.md`](./extrair-geom-brasil.md) / `scripts/extract-brasil-way-geom.js`
+- [x] ddsoft: migration `dne_geo_via` (+oneway) + `dne_idx_logradouro_via` + `dne_geo_via_ponto` + `dne_geo_via_ligacao`
+- [x] ddsoft: `osm:dne:load-via` (geom / ponto / ligacao)
+- [ ] Re-extrair GEOM com coluna `oneway` onde ainda for legado (`osm_id@polyline`)
+- [ ] Rodar `osm:dne:load-via` nas UFs desejadas
 - [ ] ddsoft: `geometria_logradouro` + `tem_geometria` em `buscar_dne_area`
 - [ ] ddsoft: camada `via-destaque` no mapa
+- [ ] ddsoft: proximidade via `dne_geo_via_ponto` / vizinhos via `dne_geo_via_ligacao`
 
 ## 9. Ligações
 
+- [**extrair-geom-brasil.md**](./extrair-geom-brasil.md) — como rodar `--way-geom` no Brasil (interruptível)
+- [**via-cruzamentos-densificar.md**](./via-cruzamentos-densificar.md) — pontos ao longo da via + ligações entre `log_nu`
 - [dne-geo-join.md](./dne-geo-join.md) — spec do join; contrato de saída com a coluna 26
 - [extract-e-artefatos.md](./extract-e-artefatos.md) — contrato dos TXT do extract
 - [bairro-logradouro.md](./bairro-logradouro.md) — cobertura medida, `OSM_ADDR_POINT_*` sem consumidor

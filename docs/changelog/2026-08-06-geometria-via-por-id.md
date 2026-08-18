@@ -41,7 +41,7 @@ unidades de **1e-6 grau**; o primeiro absoluto, os demais em **delta**.
 
 `geomFromNodeIds()` já percorria a coordenada de cada nó para o centroide e a bbox, e
 descartava tudo. Agora coleta os pontos quando pedido (opt-in — a função roda para toda way
-do PBF) e emite `OSM_LOGRADOURO_GEOM_{UF}.TXT` (`osm_id@polyline`).
+do PBF) e emite `OSM_LOGRADOURO_GEOM_{UF}.TXT` (`osm_id@polyline@oneway`: `0` ausente · `1` frente · `2` reverso · `3` duplo explícito).
 
 - Flag `--way-geom` / `--datasets=…,geom`; pedir `geom` liga `logradouro` junto.
 - Arquivo irmão, não coluna a mais: o join lê o logradouro inteiro e não usa geometria.

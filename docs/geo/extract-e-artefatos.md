@@ -73,8 +73,9 @@ Detalhe completo no `README-colunas.md` gerado na saída.
 `osm_id@name@name_norm@kind@uf@city@city_norm@suburb@suburb_norm@postcode@lat@lng@…@way_node_count@name_alt@name_alt_norm@osm_type`
 
 **Logradouro GEOM (opcional):**  
-`osm_id@polyline` — pontos separados por `;`, cada um `lat,lng` em unidades de **1e-6 grau**;
-o primeiro absoluto, os demais em **delta**. Só way com 2+ pontos distintos entra (toda linha
+`osm_id@polyline@oneway` — pontos separados por `;`, cada um `lat,lng` em unidades de **1e-6 grau**;
+o primeiro absoluto, os demais em **delta**. `oneway`: `0` ausente · `1` frente · `2` reverso ·
+`3` mão dupla explícita (`osm-oneway.js`). Só way com 2+ pontos distintos entra (toda linha
 desenha), e o alfabeto evita `@` de propósito — o sanitizador do writer o trocaria por espaço
 em silêncio. Spec: [geometria-via-destaque.md](./geometria-via-destaque.md).
 

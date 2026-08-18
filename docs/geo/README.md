@@ -5,6 +5,7 @@ Documentação operacional e de desenho do caminho **OpenStreetMap (PBF) → arq
 | Documento | Conteúdo |
 |-----------|----------|
 | [**proximo-passo-brasil.md**](./proximo-passo-brasil.md) | **Comece aqui** se o extract BR já rodou: flatten → join → load DNE/locais |
+| [**extrair-geom-brasil.md**](./extrair-geom-brasil.md) | **Traçado das vias (GEOM)** — script retomável Brasil; o que falta em `G:\` |
 | [**estado-atual.md**](./estado-atual.md) | O que já foi feito (Sudeste: estados, municípios, join DNE↔OSM) e números reais |
 | [**extract-e-artefatos.md**](./extract-e-artefatos.md) | `extract-geocode-pbf.js`, formatos TXT, two-pass, **resume**, wipe |
 | [**match-estado-municipio.md**](./match-estado-municipio.md) | CLI `osm:locais:enrich-geo`, IBGE, lições (distrito 9 dígitos, `admin_centre`) |
@@ -12,6 +13,7 @@ Documentação operacional e de desenho do caminho **OpenStreetMap (PBF) → arq
 | [**melhoria-extracao-coordenadas.md**](./melhoria-extracao-coordenadas.md) | **Diagnóstico medido** do cruzamento OSM↔DNE: por que falhava, o que foi medido |
 | [**dne-geo-join.md**](./dne-geo-join.md) | **Especificação** do `dne-geo-join.js`: processo, contrato, envelope, multi-mun |
 | [**geometria-via-destaque.md**](./geometria-via-destaque.md) | **Traçado da via** por id exato: `--way-geom`, coluna `osm_way_ids`, e o roteiro do ddsoft |
+| [**via-cruzamentos-densificar.md**](./via-cruzamentos-densificar.md) | **Cruzamentos + densificação** (~111 m) → `DNE_GEO_VIA_PONTO_*` / `VIA_LIGACAO_*` |
 | [**cep-externo.md**](./cep-externo.md) | Cache `CEP_EXTERNO.TXT` (AwesomeAPI): formato `@`, dedupe por CEP |
 | [**cep-externo-qualidade/**](./cep-externo-qualidade/README.md) | Relatórios de qualidade por bucket de consulta |
 | [**operacao-comandos.md**](./operacao-comandos.md) | Receitas de CLI (copiar e colar) |

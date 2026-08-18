@@ -34,6 +34,7 @@ var nameNorm = require('./name-norm').nameNorm;
 var ufBr = require('./uf-br');
 var txtAt = require('./txt-at-writer');
 var polyline = require('./geo-polyline');
+var oneway = require('./osm-oneway');
 
 var DEFAULT_SOFT_STOP_MS = 30000;
 var DEFAULT_NODE_CACHE = 500000;
@@ -627,7 +628,7 @@ function writeLogradouroRow(ctx, osmType, wayId, tags, name, nn, g, ibgeInfo) {
 	]);
 	ctx.stats.logradouro++;
 	if (g.nodes_resolved === 0) ctx.stats.logradouroNoGeom++;
-	writeLogradouroGeomRow(ctx, uf, wayId, g);
+	writeLogradouroGeomRow(ctx, uf, wayId, g, tags);
 }
 
 /**
@@ -644,8 +645,10 @@ function writeLogradouroRow(ctx, osmType, wayId, tags, name, nn, g, ibgeInfo) {
  * Menos de dois pontos distintos não vira linha — praça mapeada como nó, way
  * cujos nós não foram resolvidos, way degenerada. Fica de fora e é contada, em
  * vez de virar uma linha vazia que o consumidor teria de filtrar.
+ *
+ * Coluna 3 `oneway` (0–3): sentido compacto — ver `osm-oneway.js`.
  */
-function writeLogradouroGeomRow(ctx, uf, wayId, g) {
+function writeLogradouroGeomRow(ctx, uf, wayId, g, tags) {
 	if (!ctx.wantGeom) return;
 	if (!g || !g.pontos || g.pontos.length < 2) {
 		ctx.stats.logradouroGeomVazio++;
@@ -657,7 +660,12 @@ function writeLogradouroGeomRow(ctx, uf, wayId, g) {
 		ctx.stats.logradouroGeomVazio++;
 		return;
 	}
-	ctx.writer.write('OSM_LOGRADOURO_GEOM_' + (uf || 'XX'), [wayId, linha]);
+	var sentido = oneway.onewayCode(tags);
+	ctx.writer.write('OSM_LOGRADOURO_GEOM_' + (uf || 'XX'), [
+		wayId,
+		linha,
+		String(sentido)
+	]);
 	ctx.stats.logradouroGeom++;
 	ctx.stats.logradouroGeomPontos += polyline.countPolyline(linha);
 }
@@ -1173,13 +1181,15 @@ function writeReadmeColunas(outDir, opts) {
 		'`TLO_TX` de área (Praça, Largo, Parque, Jardim, Vila, Área). Sem essa guarda, ' +
 		'`Parque Villa-Lobos` casa com `Rua Villa-Lobos`.\n\n' +
 		'## OSM_LOGRADOURO_GEOM_{UF} (opcional, `--way-geom`)\n\n' +
-		'`osm_id@polyline`\n\n' +
-		'Traçado da way, para desenhar a via no mapa sem casar nome em runtime.\n' +
+		'`osm_id@polyline@oneway`\n\n' +
+		'Traçado da way + sentido, para desenhar / rotear sem casar nome em runtime.\n' +
 		'Irmão de `OSM_LOGRADOURO_{UF}`: mesma UF, mesmo filtro, e todo `osm_id` ' +
 		'daqui existe lá (o inverso não vale).\n\n' +
 		'- `polyline`: pontos separados por `;`, cada um `lat,lng` em **unidades de ' +
 		'1e-6 grau** (inteiros). O primeiro é absoluto, os demais são **deltas** do ' +
 		'anterior: `-23552000,-46632000;-1000,-1000`.\n' +
+		'- `oneway` (compacto): `0` ausente · `1` frente (`yes`) · `2` reverso (`-1`) · ' +
+		'`3` mão dupla explícita (`no`). Outros valores OSM → `0`.\n' +
 		'- Só entra way com **2+ pontos distintos** após o arredondamento. Praça ' +
 		'mapeada como nó, way sem nó resolvido e way degenerada ficam de fora — ' +
 		'toda linha do arquivo desenha.\n' +
@@ -1837,6 +1847,7 @@ module.exports = {
 	logradouroKind: logradouroKind,
 	altNames: altNames,
 	nameNorm: nameNorm,
+	onewayCode: oneway.onewayCode,
 	DEFAULT_WAVE_NODES: DEFAULT_WAVE_NODES,
 	DEFAULT_WAVE_STREETS: DEFAULT_WAVE_STREETS
 };

@@ -32,6 +32,7 @@ Documentação detalhada:
 |-----------|----------|
 | [**docs/objetivo-e-contexto.md**](docs/objetivo-e-contexto.md) | Meta de geocoding, o que o script entrega agora, o que falta, roadmap |
 | [**docs/geo/README.md**](docs/geo/README.md) | **Pipeline geo:** estado atual, extract, match, bairro/logradouro, comandos |
+| [**docs/geo/extrair-geom-brasil.md**](docs/geo/extrair-geom-brasil.md) | Traçado das vias (`OSM_LOGRADOURO_GEOM_*`) — script retomável Brasil |
 | [**docs/o-que-o-script-grava.md**](docs/o-que-o-script-grava.md) | Cada campo de stats/results/progresso e sidecars bzip |
 | [**docs/amostra-estrutura-dados.md**](docs/amostra-estrutura-dados.md) | Exemplos XML + amostras reais/parciais do inventário |
 | [**docs/plans/coord-layout.md**](docs/plans/coord-layout.md) | Plano: mapa lat/lon × posição no stream |

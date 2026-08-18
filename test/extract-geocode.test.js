@@ -338,6 +338,8 @@ test('--way-geom emite OSM_LOGRADOURO_GEOM_{UF} com o traçado da way', async fu
 	geoms.forEach(function (r) {
 		assert.ok(idsLog[r[0]], 'osm_id ' + r[0] + ' também está em OSM_LOGRADOURO_SP');
 		assert.ok(r[1].indexOf(';') > 0, 'polyline com 2+ pontos');
+		assert.equal(r.length, 3, 'osm_id@polyline@oneway');
+		assert.ok(/^[0123]$/.test(r[2]), 'oneway compacto 0–3, got ' + r[2]);
 	});
 
 	// Rua Augusta: way de 2 nós, resolvida na pass 2 → traçado com 2 pontos que
@@ -373,6 +375,7 @@ test('--way-geom emite OSM_LOGRADOURO_GEOM_{UF} com o traçado da way', async fu
 	// README-colunas documenta o arquivo novo.
 	var readme = fs.readFileSync(path.join(outGeom, 'README-colunas.md'), 'utf8');
 	assert.ok(readme.indexOf('OSM_LOGRADOURO_GEOM_{UF}') >= 0);
+	assert.ok(readme.indexOf('osm_id@polyline@oneway') >= 0);
 
 	rmrf(outGeom);
 });
