@@ -189,6 +189,28 @@ Pasta canônica da saída boa (2026-07-30): **`G:\dne-geo-local`**. `G:\dne-geo`
 
 Flags úteis: `--envelope-tol-km=1` (default), `--sem-envelope`, `--sem-exclusao-cluster`, `--quiet`.
 
+### Validação por polígono municipal (desde 21/08/2026)
+
+Ao fim do run sai uma linha nova, que **mede sem filtrar** — quantas `ok` têm centróide fora do
+polígono do próprio município, quebrado por distância da divisa:
+
+```
+[poly] fora do município: 6926/70797 ok (9.78%)  <1km=1278 1-5km=1519 5-25km=3046 >25km=1083
+```
+
+As duas faixas de cima são ruído de divisa; as de baixo (**4 129 linhas em RJ**) são erro de
+verdade — linha `ok`, com coordenada, em outra cidade. Detalhe e amostra das piores no
+`DNE_GEO_RELATORIO_{UF}.json`, campo `validacao_poligono`.
+
+Depende de `mun-poly.json` (versionado). Se sumir, o join loga `[poly] [skip]` e segue igual.
+Regerar a malha (só quando o IBGE atualizar):
+
+```bash
+npm run mun:poly -- --dne=D:\dev\ddsoft\ddsoft-online\_ignore\Delimitado
+```
+
+Flags: `--sem-validacao-poligono`, `--mun-poly=ARQ`, `--validacao-exemplos=N` (padrão 30).
+
 ### Brasil — uma pasta só: `G:\osm-geo-br-uf`
 
 Desde 18/08/2026 o join lê **`G:\osm-geo-br-uf`**, saída de

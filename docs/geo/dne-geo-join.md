@@ -205,6 +205,37 @@ por `way_node_count`. Linha sem cluster sai **vazia**, com `geo_status` dizendo 
 Sem fallback de centroide de bairro ou município. Coordenada que não é da via envenena raio de
 entrega e ordenação por distância — e não dá para distinguir depois.
 
+### Fase 7 — validação por polígono municipal (medição, não filtro)
+
+Depois de gravar, o run conta quantas linhas `ok` têm centróide **fora do polígono real** do
+município a que pertencem — point-in-polygon contra a malha do IBGE
+([`mun-poly.js`](../../mun-poly.js) / `mun-poly.json`), pelo código IBGE que a linha já
+carrega (coluna 14). **Não altera `geo_status` nem a escolha de candidato.**
+
+Por que existe: a defesa contra o falso positivo distante é a pegada por âncoras (fase 3), que
+é uma aproximação do município feita com o mesmo dado que se quer validar — quando erra, erra
+calada, e a linha sai `ok` com coordenada em outra cidade. O polígono do IBGE é independente do
+join. Em RJ, já com `--ancora-raio-km=60`, **6 926 de 70 797 linhas `ok` (9,8 %)** caem fora.
+
+O resultado é quebrado por **distância da divisa**, e a faixa é o que separa ruído de erro:
+
+| faixa | RJ 21/08 | leitura |
+|---|---:|---|
+| < 1 km | 1 278 | via de divisa, centróide caindo fora por pouco, malha simplificada |
+| 1–5 km | 1 519 | idem, com menos convicção |
+| 5–25 km | 3 046 | sem desculpa |
+| > 25 km | 1 083 | sem desculpa |
+
+Sem `mun-poly.json` a fase sai de cena (`[poly] [skip] …`) e o run segue igual — o arquivo é
+grande e versionado, e nenhum run pode depender dele para terminar. `--sem-validacao-poligono`
+desliga; `--mun-poly=ARQ` aponta para outra malha; `--validacao-exemplos=N` dimensiona a
+amostra das piores no relatório (padrão 30).
+
+Gerar a malha: `npm run mun:poly -- --dne=DIR` (ver
+[`scripts/build-mun-poly.js`](../../scripts/build-mun-poly.js) e o changelog
+[2026-08-21](../changelog/2026-08-21-validacao-poligono-municipal.md), que registra a escolha
+do eps de simplificação e o recorte aos 636 municípios com logradouro no DNE).
+
 ## Contrato de saída
 
 `DNE_GEO_LOGRADOURO_{UF}.TXT` — UTF-8, delimitador `@`, sem header, 26 colunas:
@@ -554,6 +585,28 @@ re-rodados; reprocessar para atualizar):
 ```
 
 `envelope_*` e `clusters_multi_*` passam a ser preenchidos após reprocessar com as fases 5c/5d.
+
+`validacao_poligono` (fase 7) entra como um bloco à parte — `null` quando a malha não está no
+disco ou quando `--sem-validacao-poligono` foi passado. Números de RJ 21/08/2026:
+
+```json
+"validacao_poligono": {
+  "malha": { "fonte": "…intrarregiao=municipio", "baixado_em": "2026-08-21",
+             "simplificacao": "Douglas-Peucker eps=0.003° (~333 m), 4 casas",
+             "recorte": "636 municípios com logradouro no DNE", "municipios": 636 },
+  "ok": 70797, "avaliados": 70797, "sem_ibge": 0, "sem_poligono": 0,
+  "fora": 6926, "fora_pct": 9.78,
+  "fora_por_faixa": { "ate_1km": 1278, "de_1_a_5km": 1519, "de_5_a_25km": 3046, "mais_de_25km": 1083 },
+  "fora_por_municipio": { "Rio de Janeiro": 1331, "Nova Iguaçu": 789, "Duque de Caxias": 515 },
+  "fora_exemplos": [ { "log_nu": "373543", "nome": "Avenida das Camélias", "cidade": "Volta Redonda",
+                       "ibge": "3306305", "cep": "27281050", "lat": -22.4992, "lng": -44.6745,
+                       "km_fora": 53.3, "geo_regra": "exato" } ]
+}
+```
+
+`sem_poligono` conta a linha cujo município **não está** na malha (o recorte só traz os que têm
+logradouro no DNE): é "não sei", nunca "fora". `avaliados = ok − sem_ibge − sem_poligono`, e é
+esse o denominador de `fora_pct`.
 
 `DNE_GEO_BAIRRO_{UF}.TXT` sai de graça no mesmo passe: bbox por `bai_nu` pela união das vias
 resolvidas. Resolve o lado bairro sem depender do `OSM_BAIRRO.TXT` (que tem 2 696 linhas em `XX`).
