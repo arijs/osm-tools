@@ -24,6 +24,9 @@
  *     --sem-vizinho-cep5    desliga a recuperação por vizinhança CEP-5 (5e e 5f)
  *     --sem-fuzzy           desliga o degrau fuzzy (Levenshtein dist=1, len≥10)
  *     --sem-exclusao-cluster desliga a exclusividade de cluster entre municípios
+ *     --sem-validacao-poligono  desliga a verificação pós-join por polígono municipal
+ *     --mun-poly=ARQ        malha municipal alternativa (padrão: ./mun-poly.json)
+ *     --validacao-exemplos=30  quantas das piores vão para o relatório
  *     --quiet
  */
 
@@ -34,6 +37,7 @@ var nameNorm = require('./name-norm').nameNorm;
 var keys = require('./name-keys');
 var geo = require('./geo-cluster');
 var txtAt = require('./txt-at-writer');
+var munPoly = require('./mun-poly');
 
 var REGRAS = [
 	'exato', 'area', 'name_alt', 'addr', 'nucleo', 'fonetico',
@@ -1150,6 +1154,8 @@ async function run(opts) {
 	// e o arquivo pode não estar completo quando run() retorna.
 	await writer.flush();
 
+	var validacao = validarPoligonoMunicipal(rows, localidades, opts, log);
+
 	var relatorio = {
 		uf: uf,
 		gerado_por: 'dne-geo-join.js',
@@ -1183,7 +1189,8 @@ async function run(opts) {
 		clusters_multi_municipio: stats.clusters_multi_municipio || 0,
 		linhas_em_cluster_multi: stats.linhas_em_cluster_multi || 0,
 		revogados_conflito_municipio: stats.revogados_conflito_municipio || 0,
-		bairros_com_bbox: bairroAgg.size
+		bairros_com_bbox: bairroAgg.size,
+		validacao_poligono: validacao
 	};
 	fs.writeFileSync(
 		path.join(opts.outDir, 'DNE_GEO_RELATORIO_' + uf + '.json'),
@@ -1194,6 +1201,116 @@ async function run(opts) {
 	log('OK: ' + (porStatus.ok || 0) + '/' + rows.length + ' (' + okPct + '%)  ' +
 		REGRAS.map(function (k) { return k + '=' + (porRegra[k] || 0); }).join(' '));
 	return relatorio;
+}
+
+// ------------------------------------------- validação por polígono municipal
+
+/** Faixas de distância da divisa. `<1` e `1–5` são ruído honesto (via de divisa,
+ * centróide caindo do lado de fora por pouco, malha simplificada); `5–25` e
+ * `>25` não têm essa desculpa. Sem a quebra, o total não decide nada. */
+function faixaBorda(km) {
+	if (km < 1) return 'ate_1km';
+	if (km < 5) return 'de_1_a_5km';
+	if (km <= 25) return 'de_5_a_25km';
+	return 'mais_de_25km';
+}
+
+/**
+ * MEDIÇÃO, não filtro: quantas linhas `ok` têm centróide fora do polígono do
+ * próprio município. Não mexe em `geo_status` nem na escolha de candidato.
+ *
+ * A defesa de hoje contra o falso positivo distante é a pegada por âncoras, que
+ * é uma aproximação do município construída com o mesmo dado que se quer
+ * validar — quando ela erra, erra calada, e a linha sai `ok` com coordenada em
+ * outra cidade. O polígono do IBGE é independente do join e enxerga o resíduo:
+ * em RJ, já com `--ancora-raio-km=60`, ~6,9 mil linhas `ok` (9,8%).
+ *
+ * Sem `mun-poly.json` a verificação sai de cena e o join segue igual — o arquivo
+ * é grande e versionado, e nenhum run pode depender dele para terminar.
+ *
+ * @param {object[]} rows  linhas do DNE já resolvidas
+ * @param {Map} localidades  loc_nu → localidade (traz o código IBGE em `mun`)
+ * @param {object} opts
+ * @param {function} log
+ * @returns {object|null} bloco do relatório, ou `null` quando não rodou
+ */
+function validarPoligonoMunicipal(rows, localidades, opts, log) {
+	if (opts.semValidacaoPoligono) {
+		log('[poly] validação por polígono municipal desligada (--sem-validacao-poligono)');
+		return null;
+	}
+	if (!munPoly.usarArquivo(opts.munPoly || null)) {
+		log('[poly] [skip] malha municipal ausente (' +
+			(opts.munPoly || munPoly.CAMINHO_PADRAO) + ') — ver scripts/build-mun-poly.js');
+		return null;
+	}
+
+	var maxExemplos = opts.validacaoExemplos === undefined ? 30 : opts.validacaoExemplos;
+	var porFaixa = { ate_1km: 0, de_1_a_5km: 0, de_5_a_25km: 0, mais_de_25km: 0 };
+	var porMunicipio = {};
+	var piores = [];
+	var ok = 0, semIbge = 0, semPoligono = 0, fora = 0;
+
+	for (var i = 0; i < rows.length; i++) {
+		var row = rows[i];
+		if (row.status !== 'ok' || !row.cluster) continue;
+		ok++;
+		var loc = localidades.get(row.loc_nu) || {};
+		if (!loc.mun) { semIbge++; continue; }
+		var a = row.cluster.agg;
+		var dentro = munPoly.dentroDoMunicipio(loc.mun, a.lat, a.lng);
+		// `null` é "não sei" (município fora do recorte da malha): não é "fora"
+		if (dentro === null) { semPoligono++; continue; }
+		if (dentro) continue;
+		fora++;
+		var km = munPoly.distanciaDaBordaKm(loc.mun, a.lat, a.lng);
+		porFaixa[faixaBorda(km)]++;
+		var cidade = loc.nome || '';
+		porMunicipio[cidade] = (porMunicipio[cidade] || 0) + 1;
+		if (maxExemplos > 0) {
+			piores.push({
+				log_nu: row.log_nu,
+				nome: (row.tlo + ' ' + row.log_no).trim(),
+				cidade: cidade,
+				ibge: loc.mun,
+				cep: row.cep,
+				lat: a.lat,
+				lng: a.lng,
+				km_fora: Math.round(km * 10) / 10,
+				geo_regra: row.regra
+			});
+		}
+	}
+
+	// desempate por log_nu: o mesmo insumo tem de dar o mesmo relatório
+	piores.sort(function (x, y) {
+		return y.km_fora - x.km_fora || Number(x.log_nu) - Number(y.log_nu);
+	});
+	var ordenado = {};
+	Object.keys(porMunicipio)
+		.sort(function (x, y) { return porMunicipio[y] - porMunicipio[x] || (x < y ? -1 : 1); })
+		.forEach(function (k) { ordenado[k] = porMunicipio[k]; });
+
+	var avaliados = ok - semIbge - semPoligono;
+	var bloco = {
+		malha: munPoly.meta(),
+		ok: ok,
+		avaliados: avaliados,
+		sem_ibge: semIbge,
+		sem_poligono: semPoligono,
+		fora: fora,
+		fora_pct: avaliados ? Math.round((fora / avaliados) * 10000) / 100 : 0,
+		fora_por_faixa: porFaixa,
+		fora_por_municipio: ordenado,
+		fora_exemplos: piores.slice(0, maxExemplos)
+	};
+
+	log('[poly] fora do município: ' + fora + '/' + avaliados + ' ok (' + bloco.fora_pct + '%)' +
+		'  <1km=' + porFaixa.ate_1km + ' 1-5km=' + porFaixa.de_1_a_5km +
+		' 5-25km=' + porFaixa.de_5_a_25km + ' >25km=' + porFaixa.mais_de_25km +
+		(semPoligono ? '  (sem polígono: ' + semPoligono + ')' : '') +
+		(semIbge ? '  (sem IBGE: ' + semIbge + ')' : ''));
+	return bloco;
 }
 
 function parseCli(argv) {
@@ -1219,6 +1336,9 @@ function parseCli(argv) {
 		else if (a === '--sem-vizinho-cep5') o.semVizinhoCep5 = true;
 		else if (a === '--sem-fuzzy') o.semFuzzy = true;
 		else if (a === '--sem-exclusao-cluster') o.semExclusaoCluster = true;
+		else if (a === '--sem-validacao-poligono') o.semValidacaoPoligono = true;
+		else if (a.indexOf('--mun-poly=') === 0) o.munPoly = a.slice(11);
+		else if (a.indexOf('--validacao-exemplos=') === 0) o.validacaoExemplos = Number(a.slice(21));
 		else if (a === '--quiet') o.quiet = true;
 	}
 	return o;
@@ -1235,7 +1355,9 @@ module.exports = {
 	resolveOsmLogradouro: resolveOsmLogradouro,
 	loadOsmStreets: loadOsmStreets,
 	digitsCep5: digitsCep5,
-	nearestDistKm: nearestDistKm
+	nearestDistKm: nearestDistKm,
+	validarPoligonoMunicipal: validarPoligonoMunicipal,
+	faixaBorda: faixaBorda
 };
 
 if (require.main === module) {

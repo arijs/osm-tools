@@ -576,6 +576,7 @@ test('dne-geo-join: parseCli lê as opções', function () {
 		'--envelope-tol-km=0.5', '--sem-envelope', '--sem-exclusao-cluster',
 		'--vizinho-cep5-tol-km=0.8', '--vizinho-cep5-min=2', '--sem-vizinho-cep5',
 		'--sem-fuzzy',
+		'--sem-validacao-poligono', '--mun-poly=D:\\mun.json', '--validacao-exemplos=5',
 		'--quiet'
 	]);
 	assert.equal(o.dneDir, 'D:\\dne');
@@ -592,6 +593,9 @@ test('dne-geo-join: parseCli lê as opções', function () {
 	assert.equal(o.vizinhoCep5Min, 2);
 	assert.equal(o.semVizinhoCep5, true);
 	assert.equal(o.semFuzzy, true);
+	assert.equal(o.semValidacaoPoligono, true);
+	assert.equal(o.munPoly, 'D:\\mun.json');
+	assert.equal(o.validacaoExemplos, 5);
 	assert.equal(o.quiet, true);
 });
 
@@ -735,4 +739,148 @@ test('dne-geo-join: ponto de addr:street não entra em osm_way_ids', async funct
 	var row = readOut(d.out, 'ZZ');
 	assert.equal(row['108'][20], 'ok', 'casou pelo ponto de numeração');
 	assert.equal(row['108'][25], '', 'sem way, sem id');
+});
+
+// ------------------------------------------- validação por polígono municipal
+
+/**
+ * Malha sintética: `1234567` (Cidade A / Distrito B) é um quadrado de ~1 km em
+ * volta de A, e `7654321` (Cidade C) fica a ~150 km — a linha 115, que casou no
+ * cluster de A, tem que sair como fora do próprio município.
+ */
+function quadrado(latC, lngC, meio) {
+	return [
+		lngC - meio, latC - meio, lngC + meio, latC - meio,
+		lngC + meio, latC + meio, lngC - meio, latC + meio,
+		lngC - meio, latC - meio
+	];
+}
+
+function escreverMalha(dir, municipios) {
+	var p = path.join(dir, 'mun-poly-teste.json');
+	fs.writeFileSync(p, JSON.stringify({
+		fonte: 'sintética (teste)',
+		baixado_em: '2026-08-21',
+		licenca: 'teste',
+		simplificacao: 'nenhuma',
+		recorte: 'teste',
+		municipios: municipios
+	}), 'utf8');
+	return p;
+}
+
+test('dne-geo-join: validação por polígono conta as ok fora do município', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var malha = escreverMalha(d.base, {
+		'1234567': [quadrado(A_LAT - 0.002, A_LNG - 0.002, 0.005)],
+		'7654321': [quadrado(LONGE_LAT, LONGE_LNG, 0.005)]
+	});
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		munPoly: malha
+	});
+
+	var v = rel.validacao_poligono;
+	assert.equal(v.ok, rel.geo_status.ok, 'avalia toda linha ok');
+	assert.equal(v.sem_poligono, 0, 'os dois municípios estão na malha');
+	assert.equal(v.sem_ibge, 0);
+	assert.equal(v.avaliados, rel.geo_status.ok);
+	assert.equal(v.fora, 1, 'só a linha de Cidade C caiu fora');
+	assert.deepEqual(v.fora_por_faixa, {
+		ate_1km: 0, de_1_a_5km: 0, de_5_a_25km: 0, mais_de_25km: 1
+	});
+	assert.deepEqual(v.fora_por_municipio, { 'Cidade C': 1 });
+
+	var ex = v.fora_exemplos[0];
+	assert.equal(v.fora_exemplos.length, 1);
+	assert.equal(ex.log_nu, '115');
+	assert.equal(ex.cidade, 'Cidade C');
+	assert.equal(ex.ibge, '7654321');
+	assert.equal(ex.cep, '11111015');
+	assert.ok(ex.km_fora > 140 && ex.km_fora < 160, 'km fora: ' + ex.km_fora);
+	assert.equal(ex.nome, 'Rua Gama Unica');
+	assert.equal(v.malha.municipios, 2);
+});
+
+test('dne-geo-join: município fora do recorte da malha é "não sei", não "fora"', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	// só `7654321` na malha: `1234567` fica sem polígono
+	var malha = escreverMalha(d.base, { '7654321': [quadrado(LONGE_LAT, LONGE_LNG, 0.005)] });
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		munPoly: malha
+	});
+	var v = rel.validacao_poligono;
+	assert.equal(v.sem_poligono, v.ok - 1, 'só Cidade C tinha polígono');
+	assert.equal(v.avaliados, 1);
+	assert.equal(v.fora, 1);
+});
+
+test('dne-geo-join: sem malha o join roda igual e a validação sai de cena', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		munPoly: path.join(d.base, 'nao-existe.json')
+	});
+	assert.equal(rel.validacao_poligono, null);
+	assert.ok(rel.geo_status.ok > 0, 'o join terminou normalmente');
+});
+
+test('dne-geo-join: --sem-validacao-poligono desliga a medição sem mexer no join', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var malha = escreverMalha(d.base, {
+		'1234567': [quadrado(A_LAT - 0.002, A_LNG - 0.002, 0.005)],
+		'7654321': [quadrado(LONGE_LAT, LONGE_LNG, 0.005)]
+	});
+	var com = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true, munPoly: malha
+	});
+	var saidaCom = fs.readFileSync(path.join(d.out, 'DNE_GEO_LOGRADOURO_ZZ.TXT'));
+
+	var sem = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true, munPoly: malha,
+		semValidacaoPoligono: true
+	});
+	var saidaSem = fs.readFileSync(path.join(d.out, 'DNE_GEO_LOGRADOURO_ZZ.TXT'));
+
+	assert.equal(sem.validacao_poligono, null);
+	// é medição, não filtro: nem geo_status nem a saída podem mudar
+	assert.deepEqual(sem.geo_status, com.geo_status);
+	assert.deepEqual(sem.geo_regra, com.geo_regra);
+	assert.ok(saidaCom.equals(saidaSem), 'a saída é byte a byte a mesma');
+});
+
+test('dne-geo-join: --validacao-exemplos limita a amostra', async function (t) {
+	var d = setupDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var malha = escreverMalha(d.base, { '1234567': [quadrado(LONGE_LAT, LONGE_LNG, 0.005)] });
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true,
+		munPoly: malha, validacaoExemplos: 3
+	});
+	var v = rel.validacao_poligono;
+	assert.ok(v.fora > 3, 'há mais fora que a amostra: ' + v.fora);
+	assert.equal(v.fora_exemplos.length, 3);
+	// as piores primeiro, e o desempate é determinístico
+	assert.ok(v.fora_exemplos[0].km_fora >= v.fora_exemplos[2].km_fora);
+});
+
+test('faixaBorda: as fronteiras de 1, 5 e 25 km', function () {
+	assert.equal(join.faixaBorda(0), 'ate_1km');
+	assert.equal(join.faixaBorda(0.999), 'ate_1km');
+	assert.equal(join.faixaBorda(1), 'de_1_a_5km');
+	assert.equal(join.faixaBorda(4.999), 'de_1_a_5km');
+	assert.equal(join.faixaBorda(5), 'de_5_a_25km');
+	assert.equal(join.faixaBorda(25), 'de_5_a_25km');
+	assert.equal(join.faixaBorda(25.001), 'mais_de_25km');
+	assert.equal(join.faixaBorda(1e9), 'mais_de_25km');
 });
