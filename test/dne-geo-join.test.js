@@ -635,6 +635,83 @@ test('dne-geo-join: CEP/bairro vencem tamanho no homônimo do mesmo município (
 	assert.ok(rel.geo_status.ok >= 8);
 });
 
+
+/**
+ * Caso Taipas: DNE tem Rua dos Pinheiros num CEP ao norte; OSM só tem a via
+ * famosa no oeste. Vizinhas 02987 existem. Tem que virar ambiguo (longe_do_cep),
+ * não ok na coordenada errada.
+ */
+function setupTaipasDirs() {
+	var base = fs.mkdtempSync(path.join(os.tmpdir(), 'dne-geo-tai-'));
+	var dne = path.join(base, 'dne');
+	var osm = path.join(base, 'osm');
+	var out = path.join(base, 'out');
+	fs.mkdirSync(dne);
+	fs.mkdirSync(osm);
+
+	var loc = ['1@ZZ@Sao Paulo@@1@M@@S Paulo@3550308'].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOCALIDADE.TXT'), Buffer.from(loc, 'latin1'));
+
+	var bai = [
+		'10@ZZ@1@Pinheiros@Pinheiros',
+		'20@ZZ@1@Parque Taipas@Pq Taipas'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_BAIRRO.TXT'), Buffer.from(bai, 'latin1'));
+
+	var WEST_LAT = A_LAT, WEST_LNG = A_LNG;
+	var NORTH_LAT = A_LAT + 0.10, NORTH_LNG = A_LNG;
+
+	var log = [
+		'500@ZZ@1@10@@Alfa Pinheiros@@05422001@Rua@S@R Alfa Pinheiros',
+		'501@ZZ@1@10@@Vizinha Pin Um@@05422010@Rua@S@R Vizinha Pin Um',
+		'609712@ZZ@1@10@@dos Pinheiros@@05422030@Rua@S@R dos Pinheiros',
+		'520@ZZ@1@20@@Alfa Taipas@@02987001@Rua@S@R Alfa Taipas',
+		'521@ZZ@1@20@@Vizinha Tai Um@@02987010@Rua@S@R Vizinha Tai Um',
+		'522@ZZ@1@20@@Vizinha Tai Dois@@02987020@Rua@S@R Vizinha Tai Dois',
+		'917871@ZZ@1@20@@dos Pinheiros@@02987104@Rua@S@R dos Pinheiros'
+	].join('\n');
+	fs.writeFileSync(path.join(dne, 'LOG_LOGRADOURO_ZZ.TXT'), Buffer.from(log, 'latin1'));
+
+	var ways = [
+		osmRow(1, 'Rua Alfa Pinheiros', 'rua alfa pinheiros', 'residential', WEST_LAT, WEST_LNG),
+		osmRow(2, 'Rua Vizinha Pin Um', 'rua vizinha pin um', 'residential',
+			WEST_LAT - 0.001, WEST_LNG),
+		osmRow(3, 'Rua dos Pinheiros', 'rua dos pinheiros', 'residential',
+			WEST_LAT, WEST_LNG + 0.0003, 40),
+		osmRow(4, 'Rua Alfa Taipas', 'rua alfa taipas', 'residential', NORTH_LAT, NORTH_LNG),
+		osmRow(5, 'Rua Vizinha Tai Um', 'rua vizinha tai um', 'residential',
+			NORTH_LAT - 0.001, NORTH_LNG),
+		osmRow(6, 'Rua Vizinha Tai Dois', 'rua vizinha tai dois', 'residential',
+			NORTH_LAT + 0.001, NORTH_LNG - 0.001)
+	].join('\n');
+	fs.writeFileSync(path.join(osm, 'OSM_LOGRADOURO_ZZ.TXT'), ways, 'utf8');
+
+	return {
+		base: base, dne: dne, osm: osm, out: out,
+		WEST_LAT: WEST_LAT, NORTH_LAT: NORTH_LAT
+	};
+}
+
+test('dne-geo-join: recusa homônimo único longe do CEP (Taipas)', async function (t) {
+	var d = setupTaipasDirs();
+	t.after(function () { fs.rmSync(d.base, { recursive: true, force: true }); });
+
+	var rel = await join.run({
+		dneDir: d.dne, osmDir: d.osm, outDir: d.out, uf: 'ZZ', quiet: true
+	});
+	var row = readOut(d.out, 'ZZ');
+
+	assert.equal(row['609712'][20], 'ok', 'Pinheiros verdadeiro continua ok');
+	assert.ok(Math.abs(Number(row['609712'][14]) - d.WEST_LAT) < 0.01);
+	assert.equal(row['917871'][20], 'ambiguo', 'Taipas não herda a via famosa');
+	assert.equal(row['917871'][14], '', 'sem coordenada');
+		assert.ok(((rel.ambiguo_por_motivo || {}).longe_do_cep || 0) >= 1
+		|| ((rel.ambiguo_por_motivo || {}).longe_do_bairro || 0) >= 1
+		|| (rel.revogados_longe_vizinho || 0) >= 1,
+		JSON.stringify(rel.ambiguo_por_motivo) + ' revogados=' + rel.revogados_longe_vizinho);
+	assert.equal(row['520'][20], 'ok');
+});
+
 test('digitsCep5 e nearestDistKm', function () {
 	assert.equal(join.digitsCep5('04775-120'), '04775');
 	assert.equal(join.digitsCep5('04775120'), '04775');
@@ -650,6 +727,7 @@ test('dne-geo-join: parseCli lê as opções', function () {
 		'--cluster-cell=0.05', '--max-extent-km=20', '--footprint-dilate=2',
 		'--envelope-tol-km=0.5', '--sem-envelope', '--sem-exclusao-cluster',
 		'--vizinho-cep5-tol-km=0.8', '--vizinho-cep5-min=2', '--sem-vizinho-cep5',
+		'--max-dist-vizinho-km=4', '--sem-max-dist-vizinho',
 		'--sem-fuzzy',
 		'--sem-validacao-poligono', '--mun-poly=D:\\mun.json', '--validacao-exemplos=5',
 		'--quiet'
@@ -667,6 +745,8 @@ test('dne-geo-join: parseCli lê as opções', function () {
 	assert.equal(o.vizinhoCep5TolKm, 0.8);
 	assert.equal(o.vizinhoCep5Min, 2);
 	assert.equal(o.semVizinhoCep5, true);
+	assert.equal(o.maxDistVizinhoKm, 4);
+	assert.equal(o.semMaxDistVizinho, true);
 	assert.equal(o.semFuzzy, true);
 	assert.equal(o.semValidacaoPoligono, true);
 	assert.equal(o.munPoly, 'D:\\mun.json');

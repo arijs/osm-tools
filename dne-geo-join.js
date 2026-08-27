@@ -22,6 +22,8 @@
  *     --vizinho-cep5-tol-km=1  recupera fora_do_footprint e pós-conflito por CEP-5 (km)
  *     --vizinho-cep5-min=3    mínimo de vias ok no mesmo CEP-5 (ou bairro)
  *     --sem-vizinho-cep5    desliga a recuperação por vizinhança CEP-5 (5e e 5f)
+ *     --max-dist-vizinho-km=5  `ok` longe demais das vizinhas CEP/bairro vira ambiguo
+ *     --sem-max-dist-vizinho   desliga essa guarda (fase 5g)
  *     --sem-fuzzy           desliga o degrau fuzzy (Levenshtein dist=1, len≥10)
  *     --sem-exclusao-cluster desliga a exclusividade de cluster entre municípios
  *     --sem-validacao-poligono  desliga a verificação pós-join por polígono municipal
@@ -207,6 +209,57 @@ function pickDesempate(dentro, clusters, row, volta, porBairro, idxAnch) {
 	if (empate) return { idx: null, via: 'empate_de_tamanho' };
 	return { idx: escolhidoT, via: 'tamanho' };
 }
+
+/**
+ * Âncoras de CEP-5 (mesmo município) ou bairro, sem a própria linha e sem
+ * homônimo de mesmo log_no (dois "dos Pinheiros" roubados não se validam).
+ */
+function vizinhoAnchorsForGuard(row, idxAnch) {
+	if (!idxAnch) return null;
+	var c5 = digitsCep5(row.cep);
+	var fonte = 'cep5';
+	var raw = c5 ? idxAnch.byCep5Loc.get(row.loc_nu + '|' + c5) : null;
+	var pts = [];
+	function take(arr) {
+		if (!arr) return;
+		for (var i = 0; i < arr.length; i++) {
+			var p = arr[i];
+			if (p.log_nu === row.log_nu) continue;
+			if (p.log_no && row.log_no && p.log_no === row.log_no) continue;
+			pts.push(p);
+		}
+	}
+	take(raw);
+	if (!pts.length) {
+		fonte = 'bairro';
+		take(row.bai_ini ? idxAnch.byBaiNu.get(row.bai_ini) : null);
+	}
+	if (!pts.length) return null;
+	return { anchors: pts, fonte: fonte };
+}
+
+/** Distância mínima cluster-vizinhas (qualquer feat, não só o centróide). */
+function clusterMinDistKm(cluster, pts) {
+	var best = Infinity;
+	var feats = cluster && cluster.feats ? cluster.feats : [];
+	for (var i = 0; i < feats.length; i++) {
+		var f = feats[i];
+		if (f.lat == null || f.lng == null) continue;
+		var d = nearestDistKm(f.lat, f.lng, pts);
+		if (d < best) best = d;
+	}
+	if (best === Infinity && cluster && cluster.agg) {
+		best = nearestDistKm(cluster.agg.lat, cluster.agg.lng, pts);
+	}
+	return best;
+}
+
+function distToVizinhoGuard(row, cluster, idxAnch) {
+	var v = vizinhoAnchorsForGuard(row, idxAnch);
+	if (!v) return null;
+	return { dist: clusterMinDistKm(cluster, v.anchors), fonte: v.fonte, n: v.anchors.length };
+}
+
 
 /** Top-N vizinhas mais próximas de (lat,lng) para auditoria. */
 function topVizinhos(lat, lng, anchors, n) {
@@ -578,6 +631,8 @@ async function run(opts) {
 	var useVizinhoCep5 = opts.semVizinhoCep5 ? false : true;
 	var vizinhoCep5TolKm = opts.vizinhoCep5TolKm == null ? 1 : opts.vizinhoCep5TolKm;
 	var vizinhoCep5Min = opts.vizinhoCep5Min == null ? 3 : opts.vizinhoCep5Min;
+	var useMaxDistVizinho = opts.semMaxDistVizinho ? false : true;
+	var maxDistVizinhoKm = opts.maxDistVizinhoKm == null ? 5 : opts.maxDistVizinhoKm;
 	var useFuzzy = opts.semFuzzy ? false : true;
 
 	log('DNE  : ' + opts.dneDir);
@@ -761,6 +816,17 @@ async function run(opts) {
 				r.motivo = 'extensao_' + Math.round(extKm) + 'km';
 				amb++;
 				continue;
+			}
+
+			if (useMaxDistVizinho && maxDistVizinhoKm > 0 && idxAnch) {
+				var dv = distToVizinhoGuard(r, alvo, idxAnch);
+				if (dv && dv.dist > maxDistVizinhoKm) {
+					r.status = 'ambiguo';
+					r.motivo = 'longe_do_' + dv.fonte;
+					r.distKm = dv.dist;
+					amb++;
+					continue;
+				}
 			}
 
 			r.cluster = alvo;
@@ -1060,6 +1126,33 @@ async function run(opts) {
 		}
 	}
 
+
+		// ---- Fase 5g: `ok` longe das vizinhas CEP-5/bairro
+		// Homônimo único no footprint (a via famosa) casa com a linha DNE de um
+		// bairro onde a rua não existe no OSM. Distância até feat mais perto das
+		// vizinhas de outro nome; via longa real passa porque algum trecho chega.
+		var revogadosLonge = 0;
+		if (useMaxDistVizinho && maxDistVizinhoKm > 0) {
+			var idxLonge = indexVizinhoAnchors(rows);
+			for (var lg = 0; lg < rows.length; lg++) {
+				var rL = rows[lg];
+				if (rL.status !== 'ok' || !rL.cluster) continue;
+				var dvL = distToVizinhoGuard(rL, rL.cluster, idxLonge);
+				if (!dvL || dvL.dist <= maxDistVizinhoKm) continue;
+				rL.status = 'ambiguo';
+				rL.motivo = 'longe_do_' + dvL.fonte;
+				rL.distKm = dvL.dist;
+				rL.cluster = null;
+				rL.regra = '';
+				revogadosLonge++;
+			}
+			if (revogadosLonge) {
+				log('      longe do vizinho: revogou ' + revogadosLonge +
+					' (tol=' + maxDistVizinhoKm + ' km)');
+			}
+		}
+		stats.revogados_longe_vizinho = revogadosLonge;
+
 	// ---- Fase 6: emitir
 	log('[6/6] gravando…');
 	fs.mkdirSync(opts.outDir, { recursive: true });
@@ -1247,6 +1340,7 @@ async function run(opts) {
 		clusters_multi_municipio: stats.clusters_multi_municipio || 0,
 		linhas_em_cluster_multi: stats.linhas_em_cluster_multi || 0,
 		revogados_conflito_municipio: stats.revogados_conflito_municipio || 0,
+		revogados_longe_vizinho: stats.revogados_longe_vizinho || 0,
 		bairros_com_bbox: bairroAgg.size,
 		validacao_poligono: validacao
 	};
@@ -1392,6 +1486,8 @@ function parseCli(argv) {
 		else if (a.indexOf('--vizinho-cep5-tol-km=') === 0) o.vizinhoCep5TolKm = Number(a.slice(22));
 		else if (a.indexOf('--vizinho-cep5-min=') === 0) o.vizinhoCep5Min = Number(a.slice(19));
 		else if (a === '--sem-vizinho-cep5') o.semVizinhoCep5 = true;
+		else if (a.indexOf('--max-dist-vizinho-km=') === 0) o.maxDistVizinhoKm = Number(a.slice(22));
+		else if (a === '--sem-max-dist-vizinho') o.semMaxDistVizinho = true;
 		else if (a === '--sem-fuzzy') o.semFuzzy = true;
 		else if (a === '--sem-exclusao-cluster') o.semExclusaoCluster = true;
 		else if (a === '--sem-validacao-poligono') o.semValidacaoPoligono = true;
