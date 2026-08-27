@@ -178,13 +178,23 @@ Vila, Área}. Sem ela, `Rua Dois` casa com `Praça Dois` — são 2 584 colisõe
 
 ### Fase 5 — desempate entre clusters
 
-Sobrando mais de um cluster dentro do footprint:
+Sobrando mais de um cluster dentro do footprint, a 1ª volta **não escolhe**:
+homônimo espera as vias únicas virarem âncora. Na 2ª volta:
 
-1. **Bairro** — cluster mais próximo do centroide do `bai_nu_ini`, calculado das vias do mesmo
-   bairro já resolvidas. É o sinal mais forte e roda numa 2ª volta.
-2. **Tamanho** — maior soma de `way_node_count`. Nos 5 exemplos acima acerta 5/5, mas é heurística:
-   `Rua Estoril` venceu com 2 ways contra três clusters de 1.
-3. Empate real → `geo_status=ambiguo`, **sem coordenada**.
+1. **CEP-5** — cluster mais próximo das vias já `ok` no mesmo município e mesmos 5 dígitos
+   de CEP. É o sinal mais local (Rua dos Pinheiros em Vila Iolanda II `08473` vs a famosa
+   em Pinheiros `05422`).
+2. **Bairro** — cluster mais próximo do centroide do `bai_nu_ini`, das vias do mesmo
+   bairro já resolvidas (únicas ou já desempatadas por CEP/bairro — tamanho não entra).
+3. **Tamanho** — maior soma de `way_node_count`, **último recurso**. Heurística: `Rua Estoril`
+   venceu com 2 ways contra três clusters de 1. Na 1ª volta o tamanho fazia a via famosa
+   "roubar" a periférica e envenenar o centroide do bairro.
+4. Empate real (tamanho ou sem âncora) → `geo_status=ambiguo`, **sem coordenada**.
+   Motivo `espera_cep_bairro` só existe entre as duas voltas.
+
+Uma via física partida em vários CEP/bairros continua um cluster só (ou o trecho mais
+perto das vizinhas do próprio CEP). O que muda é o desempate entre **clusters distintos**
+do mesmo nome, não o seccionamento de uma avenida.
 
 **Guarda de extensão (`--max-extent-km`, default 15).** A clusterização é single-link: uma corrente
 de células vizinhas liga pontas distantes. Nome genérico espalhado pela cidade encadeia tudo num
@@ -441,8 +451,9 @@ mínimo de âncoras, e só no resíduo pós-envelope.
 ### Fase 5f — vizinhança CEP-5 após `conflito_municipio`
 
 Depois da exclusão multi-município (5d), o perdedor às vezes tem **outro** cluster de nome
-(a via da própria cidade) que o desempate por tamanho não escolheu. Ex.: `Rua Neuchatel`
-em SP (`log_nu` 606476) vs São Bernardo — o cluster da Capela do Socorro ficava órfão.
+(a via da própria cidade) que o desempate da Fase 5 não escolheu. Com CEP-5/bairro
+na frente do tamanho, o caso Neuchatel costuma resolver na própria Fase 5. A 5f
+continua para o residual em que os dois municípios ainda caem no mesmo cluster.
 
 Mesma regra da 5e, com duas diferenças:
 
@@ -641,7 +652,7 @@ o código.
 |--------|--------------|
 | ~12 % das linhas sem nome correspondente no OSM | Ficam vazias — é o teto do dado, não do algoritmo |
 | Geometria por via inteira, não por seccionamento | Todos os CEPs de uma rua compartilham bbox; recorte por faixa exigiria `addr:housenumber` |
-| Desempate por tamanho é heurística | `osm_clusters > 1` marca onde ela decidiu; auditar por amostragem |
+| Desempate CEP/bairro/tamanho | `osm_clusters > 1` marca onde decidiu; tamanho é último recurso |
 | Via de divisa entre municípios | Pode cair no vizinho; footprint dilatado piora isso de propósito, para não perder a via |
 | SP inteiro em memória (~400 MB est.) | `--max-old-space-size`; se estourar, shard por letra inicial do `name_norm` |
 | Só o Sudeste tem extract | Demais UFs saem com `geo_status=sem_extract` |

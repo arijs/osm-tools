@@ -142,6 +142,72 @@ function pickVizinhoUnico(candIdxs, clusters, anchors, tolKm, maxExtentKm, rowLo
 	};
 }
 
+
+/**
+ * Desempate entre clusters dentro do footprint.
+ * Ordem: CEP-5 (vizinhas já `ok` no mesmo município) → centroide do bairro →
+ * tamanho (só 2ª volta). Na 1ª volta, homônimo com vários clusters espera;
+ * tamanho na 1ª faz a via famosa "roubar" a periférica (Rua dos Pinheiros).
+ * Via física partida em vários CEP/bairros continua ok: cada trecho cai no
+ * cluster mais perto das vizinhas do próprio CEP, ou no único cluster se
+ * o footprint já filtrou os outros.
+ */
+function pickDesempate(dentro, clusters, row, volta, porBairro, idxAnch) {
+	if (dentro.length === 1) return { idx: dentro[0], via: 'unico' };
+
+	if (idxAnch) {
+		var c5 = digitsCep5(row.cep);
+		var anc = c5 ? idxAnch.byCep5Loc.get(row.loc_nu + '|' + c5) : null;
+		if (anc && anc.length) {
+			var pts = [];
+			for (var a = 0; a < anc.length; a++) {
+				if (anc[a].log_nu !== row.log_nu) pts.push(anc[a]);
+			}
+			if (pts.length) {
+				var bestI = null, bestD = Infinity, second = Infinity;
+				for (var i = 0; i < dentro.length; i++) {
+					var agC = clusters[dentro[i]].agg;
+					var dC = nearestDistKm(agC.lat, agC.lng, pts);
+					if (dC < bestD) { second = bestD; bestD = dC; bestI = dentro[i]; }
+					else if (dC < second) second = dC;
+				}
+				if (bestI != null && bestD < second) {
+					return { idx: bestI, via: 'cep5' };
+				}
+			}
+		}
+	}
+
+	var b = porBairro.get(row.bai_ini);
+	if (b && b.n > 0) {
+		var bLat = b.sLat / b.n, bLng = b.sLng / b.n;
+		var melhor = Infinity, escolhidoB = null, empateB = false;
+		for (var d = 0; d < dentro.length; d++) {
+			var a2 = clusters[dentro[d]].agg;
+			var dist = geo.distKm(bLat, bLng, a2.lat, a2.lng);
+			if (dist < melhor - 1e-9) {
+				melhor = dist;
+				escolhidoB = dentro[d];
+				empateB = false;
+			} else if (Math.abs(dist - melhor) < 1e-9) {
+				empateB = true;
+			}
+		}
+		if (escolhidoB != null && !empateB) return { idx: escolhidoB, via: 'bairro' };
+	}
+
+	if (volta === 1) return { idx: null, via: 'espera_cep_bairro' };
+
+	var maiorPeso = -1, escolhidoT = dentro[0], empate = false;
+	for (var e = 0; e < dentro.length; e++) {
+		var w = clusters[dentro[e]].agg.weight;
+		if (w > maiorPeso) { maiorPeso = w; escolhidoT = dentro[e]; empate = false; }
+		else if (w === maiorPeso) empate = true;
+	}
+	if (empate) return { idx: null, via: 'empate_de_tamanho' };
+	return { idx: escolhidoT, via: 'tamanho' };
+}
+
 /** Top-N vizinhas mais próximas de (lat,lng) para auditoria. */
 function topVizinhos(lat, lng, anchors, n) {
 	var sorted = anchors.slice().sort(function (a, b) {
@@ -633,6 +699,8 @@ async function run(opts) {
 
 	function resolver(volta) {
 		var ok = 0, amb = 0, sem = 0;
+		// 2ª volta: vias únicas da 1ª viram âncoras CEP-5/bairro para o desempate.
+		var idxAnch = volta > 1 ? indexVizinhoAnchors(rows) : null;
 		for (var i = 0; i < rows.length; i++) {
 			var r = rows[i];
 			if (r.status === 'ok') continue;
@@ -669,27 +737,14 @@ async function run(opts) {
 			}
 
 			r.nCand = dentro.length;
-			var escolhido = dentro[0];
-			if (dentro.length > 1) {
-				var b = volta > 1 ? porBairro.get(r.bai_ini) : null;
-				if (b && b.n > 0) {
-					var bLat = b.sLat / b.n, bLng = b.sLng / b.n;
-					var melhor = Infinity;
-					for (var d = 0; d < dentro.length; d++) {
-						var a = clusters[dentro[d]].agg;
-						var dist = geo.distKm(bLat, bLng, a.lat, a.lng);
-						if (dist < melhor) { melhor = dist; escolhido = dentro[d]; }
-					}
-				} else {
-					var maiorPeso = -1, empate = false;
-					for (var e = 0; e < dentro.length; e++) {
-						var w = clusters[dentro[e]].agg.weight;
-						if (w > maiorPeso) { maiorPeso = w; escolhido = dentro[e]; empate = false; }
-						else if (w === maiorPeso) empate = true;
-					}
-					if (empate) { r.status = 'ambiguo'; r.motivo = 'empate_de_tamanho'; amb++; continue; }
-				}
+			var pick = pickDesempate(dentro, clusters, r, volta, porBairro, idxAnch);
+			if (pick.idx == null) {
+				r.status = 'ambiguo';
+				r.motivo = pick.via;
+				amb++;
+				continue;
 			}
+			var escolhido = pick.idx;
 			var alvo = clusters[escolhido];
 
 			// Encadeamento do single-link: nome genérico ("Rua Dois") espalhado pela
@@ -717,11 +772,14 @@ async function run(opts) {
 			r.status = 'ok';
 			ok++;
 
-			var bb = porBairro.get(r.bai_ini);
-			if (!bb) porBairro.set(r.bai_ini, bb = { sLat: 0, sLng: 0, n: 0 });
-			bb.sLat += r.cluster.agg.lat;
-			bb.sLng += r.cluster.agg.lng;
-			bb.n++;
+			// Tamanho é último recurso: não envenena o centroide do bairro.
+			if (dentro.length === 1 || pick.via === 'cep5' || pick.via === 'bairro' || pick.via === 'unico') {
+				var bb = porBairro.get(r.bai_ini);
+				if (!bb) porBairro.set(r.bai_ini, bb = { sLat: 0, sLng: 0, n: 0 });
+				bb.sLat += r.cluster.agg.lat;
+				bb.sLng += r.cluster.agg.lng;
+				bb.n++;
+			}
 		}
 		stats.rodadas.push({ volta: volta, ok: ok, ambiguo: amb, sem_nome_osm: sem });
 		return ok;
@@ -1356,6 +1414,7 @@ module.exports = {
 	loadOsmStreets: loadOsmStreets,
 	digitsCep5: digitsCep5,
 	nearestDistKm: nearestDistKm,
+	pickDesempate: pickDesempate,
 	validarPoligonoMunicipal: validarPoligonoMunicipal,
 	faixaBorda: faixaBorda
 };
