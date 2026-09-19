@@ -16,6 +16,7 @@
     "extract:geocode": "node extract-geocode-pbf.js",
     "dne:join": "node dne-geo-join.js",
     "join:brasil": "node scripts/join-brasil.js",
+    "via:brasil": "node scripts/via-brasil.js",
     "extract:geom-br": "node scripts/extract-brasil-way-geom.js",
     "via:cruzamentos": "node scripts/dne-via-cruzamentos.js",
     "test:via": "node --test test/via-cruzamentos.test.js test/osm-oneway.test.js",

@@ -115,6 +115,14 @@ node scripts/dne-via-cruzamentos.js `
 
 Saída: `DNE_GEO_VIA_PONTO_{UF}.TXT`, `DNE_GEO_VIA_LIGACAO_{UF}.TXT`, relatório JSON.
 
+Brasil inteiro (27 UFs, retomável — pula quem já tem `DNE_GEO_VIA_RELATORIO_{UF}.json`):
+
+```powershell
+node scripts/via-brasil.js            # defaults: join5 + G:\osm-geo-br-uf → G:\dne-geo-via-br
+node scripts/via-brasil.js --list     # status
+node scripts/via-brasil.js --only=sul
+```
+
 ### Load via no ddsoft (GEOM + pontos + ligações)
 
 Não usa `osm:dne:enrich-geo` (só centróide). Comando irmão:
